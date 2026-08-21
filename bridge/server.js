@@ -212,7 +212,6 @@ async function extractImportantMemory(transcript) {
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
         max_tokens: 400,
-        temperature: 0.2,
         system:
           "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
         messages: [
@@ -306,7 +305,6 @@ async function generateFallbackReply(turns, language, systemPrompt = "") {
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
         max_tokens: 300,
-        temperature: 0.3,
         system: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
         messages: [{ role: "user", content: `Conversation:\n${text}` }],
       }),
