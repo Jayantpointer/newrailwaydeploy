@@ -7,8 +7,9 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
+const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
+const ANTHROPIC_MODEL = envText("ANTHROPIC_MODEL", "claude-sonnet-5");
 const GROQ_API_KEY = envText("GROQ_API_KEY");
-const GROQ_MODEL = envText("GROQ_MODEL", "openai/gpt-oss-120b");
 const GROQ_STT_MODEL = envText("GROQ_STT_MODEL", "whisper-large-v3-turbo");
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
@@ -45,8 +46,10 @@ const state = {
   twilioAudioPackets: 0,
   elevenLabsRequests: 0,
   elevenLabsErrors: 0,
-  groqRequests: 0,
-  groqErrors: 0,
+  anthropicRequests: 0,
+  anthropicErrors: 0,
+  groqSttRequests: 0,
+  groqSttErrors: 0,
 };
 
 function json(res, statusCode, data) {
@@ -67,8 +70,9 @@ logEvent({
   elevenlabs_api_key_configured: Boolean(ELEVENLABS_API_KEY),
   elevenlabs_voice_id_configured: Boolean(ELEVENLABS_VOICE_ID),
   elevenlabs_model_id: ELEVENLABS_MODEL_ID,
-  groq_api_key_configured: Boolean(GROQ_API_KEY),
-  groq_model: GROQ_MODEL,
+  anthropic_api_key_configured: Boolean(ANTHROPIC_API_KEY),
+  anthropic_model: ANTHROPIC_MODEL,
+  groq_stt_api_key_configured: Boolean(GROQ_API_KEY),
   groq_stt_model: GROQ_STT_MODEL,
 });
 
@@ -194,27 +198,24 @@ async function extractImportantMemory(transcript) {
   const text = transcript.trim();
   if (!text) return null;
 
-  if (!GROQ_API_KEY) return null;
+  if (!ANTHROPIC_API_KEY) return null;
 
   try {
-    state.groqRequests += 1;
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    state.anthropicRequests += 1;
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: GROQ_MODEL,
+        model: ANTHROPIC_MODEL,
+        max_tokens: 400,
         temperature: 0.2,
-        max_completion_tokens: 400,
-        response_format: { type: "json_object" },
+        system:
+          "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
         messages: [
-          {
-            role: "system",
-            content:
-              "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
-          },
           {
             role: "user",
             content: `Transcript:\n${text}`,
@@ -224,12 +225,12 @@ async function extractImportantMemory(transcript) {
     });
 
     if (!response.ok) {
-      state.groqErrors += 1;
+      state.anthropicErrors += 1;
       return null;
     }
 
     const payload = await response.json();
-    const content = payload?.choices?.[0]?.message?.content?.trim();
+    const content = payload?.content?.find((block) => block?.type === "text")?.text?.trim();
     if (!content) return null;
 
     const parsed = JSON.parse(content);
@@ -239,7 +240,7 @@ async function extractImportantMemory(transcript) {
       memoryChunk: memoryChunk && memoryChunk.content ? { ...memoryChunk, symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [] } : null,
     };
   } catch {
-    state.groqErrors += 1;
+    state.anthropicErrors += 1;
     const fallback = buildFallbackMemoryChunk(text);
     return {
       summary: text.slice(0, 500),
@@ -252,7 +253,7 @@ async function transcribeAudioWithGroq(audioWavBase64, language) {
   if (!GROQ_API_KEY || !audioWavBase64) return "";
 
   try {
-    state.groqRequests += 1;
+    state.groqSttRequests += 1;
     const audioBuffer = Buffer.from(audioWavBase64, "base64");
     const form = new FormData();
     form.append("model", GROQ_STT_MODEL);
@@ -266,14 +267,14 @@ async function transcribeAudioWithGroq(audioWavBase64, language) {
     });
 
     if (!response.ok) {
-      state.groqErrors += 1;
+      state.groqSttErrors += 1;
       return "";
     }
 
     const payload = await response.json();
     return (payload?.text || "").trim();
   } catch (error) {
-    state.groqErrors += 1;
+    state.groqSttErrors += 1;
     logEvent({ type: "groq.error", error: error.message, stage: "transcribe" });
     return "";
   }
@@ -281,40 +282,35 @@ async function transcribeAudioWithGroq(audioWavBase64, language) {
 
 async function generateFallbackReply(turns, language, systemPrompt = "") {
   const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
-  if (!GROQ_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
+  if (!ANTHROPIC_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
 
   try {
-    state.groqRequests += 1;
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    state.anthropicRequests += 1;
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: GROQ_MODEL,
+        model: ANTHROPIC_MODEL,
+        max_tokens: 300,
         temperature: 0.3,
-        max_completion_tokens: 300,
-        reasoning_effort: "low",
-        messages: [
-          {
-            role: "system",
-            content: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
-          },
-          ...turns.map((turn) => ({ role: turn.role === "assistant" ? "assistant" : "user", content: turn.content })),
-        ],
+        system: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
+        messages: [{ role: "user", content: `Conversation:\n${text}` }],
       }),
     });
 
     if (!response.ok) {
-      state.groqErrors += 1;
+      state.anthropicErrors += 1;
       return "Sorry, I didn’t catch that. What name should I use for you?";
     }
 
     const payload = await response.json();
-    return payload?.choices?.[0]?.message?.content?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
+    return payload?.content?.find((block) => block?.type === "text")?.text?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
   } catch {
-    state.groqErrors += 1;
+    state.anthropicErrors += 1;
     return "Sorry, I didn’t catch that. What name should I use for you?";
   }
 }
@@ -490,8 +486,10 @@ const server = http.createServer((req, res) => {
       twilioAudioPackets: state.twilioAudioPackets,
       elevenLabsRequests: state.elevenLabsRequests,
       elevenLabsErrors: state.elevenLabsErrors,
-      groqRequests: state.groqRequests,
-      groqErrors: state.groqErrors,
+      anthropicRequests: state.anthropicRequests,
+      anthropicErrors: state.anthropicErrors,
+      groqSttRequests: state.groqSttRequests,
+      groqSttErrors: state.groqSttErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -601,7 +599,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "user",
           content: transcript,
           language: conversationLanguage,
-          source: "groq",
+          source: "anthropic",
         });
 
         const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
@@ -613,7 +611,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "assistant",
           content: reply,
           language: conversationLanguage,
-          source: "groq",
+          source: "anthropic",
         });
 
         const elevenLabsAudio = await synthesizeWithElevenLabs(reply, conversationLanguage).catch((error) => {

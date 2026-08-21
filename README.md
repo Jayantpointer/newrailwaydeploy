@@ -48,8 +48,9 @@ Notes:
 
 Bridge env vars:
 
-- `GROQ_API_KEY`
-- `GROQ_MODEL=openai/gpt-oss-120b`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_MODEL=claude-sonnet-5`
+- `GROQ_API_KEY` for STT only
 - `GROQ_STT_MODEL=whisper-large-v3-turbo`
 - `ELEVENLABS_API_KEY`
 - `ELEVENLABS_VOICE_ID`
