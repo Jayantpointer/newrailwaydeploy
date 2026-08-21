@@ -1,0 +1,12 @@
+{
+  "name": "calling-agent-bridge",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node bridge/server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "ws": "^8.18.0"
+  }
+}
