@@ -16,6 +16,7 @@ function envText(name, fallback = "") {
 const ELEVENLABS_API_KEY = envText("ELEVENLABS_API_KEY");
 const ELEVENLABS_VOICE_ID = envText("ELEVENLABS_VOICE_ID");
 const ELEVENLABS_MODEL_ID = envText("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2");
+const TURN_SILENCE_MS = 2600;
 
 let supabase = null;
 
@@ -568,7 +569,7 @@ wss.on("connection", async (twilioWs, req) => {
     turnTimer = setTimeout(() => {
       turnTimer = null;
       void processBufferedTurn();
-    }, 1200);
+    }, TURN_SILENCE_MS);
   }
 
   async function processBufferedTurn() {
