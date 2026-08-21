@@ -35,8 +35,8 @@ const corsHeaders = {
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
-const openrouterModel = Deno.env.get("OPENROUTER_MODEL") ?? "meta-llama/llama-3.3-70b-instruct";
-const openrouterApiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+const sambanovaModel = Deno.env.get("SAMBANOVA_MODEL") ?? "Meta-Llama-3.3-70B-Instruct";
+const sambanovaApiKey = Deno.env.get("SAMBANOVA_API_KEY") ?? "";
 const sarvamVoiceId = Deno.env.get("SARVAM_VOICE_ID") ?? "";
 const sarvamApiKey = Deno.env.get("SARVAM_API_KEY") ?? "";
 
@@ -223,9 +223,9 @@ Deno.serve(async (req) => {
       session_id: sessionId,
       caller_id: callerId,
       brain: {
-        model: settings?.anthropic_model ?? openrouterModel,
+        model: settings?.anthropic_model ?? sambanovaModel,
         system_prompt: settings?.system_prompt ?? "",
-        api_key_configured: Boolean(openrouterApiKey),
+        api_key_configured: Boolean(sambanovaApiKey),
       },
       voice: {
         provider: "sarvam",
