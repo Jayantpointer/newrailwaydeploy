@@ -32,6 +32,9 @@ PACE AND SHAPE
 - Do not use bullet points, headings, numbered lists, emoji, asterisks, or formatting that cannot be spoken naturally.
 - Do not ask a question in every turn. Often acknowledge the caller with a short statement and let them continue.
 - Ask no more than one question per turn, and never ask two questions at once.
+- If the caller says several things, answer all of them in one coherent reply.
+- If you ask a question, put it only at the end of the reply.
+- Do not do answer-question-answer-question inside one turn.
 - Do not rush to fill silence. A pause can mean the caller is thinking.
 
 WARMTH
@@ -362,6 +365,14 @@ function normalizeAssistantReply(text) {
 
   if (/(decided not to proceed|let's start fresh|let us start fresh|anything else|anything more|need anything else|goodbye|bye now)/i.test(reply)) {
     return "What would you like to do next?";
+  }
+
+  const questionMarks = reply.match(/\?/g) || [];
+  if (questionMarks.length > 1) {
+    const lastQuestionIndex = reply.lastIndexOf("?");
+    const before = reply.slice(0, lastQuestionIndex).replace(/\?/g, ".");
+    const after = reply.slice(lastQuestionIndex);
+    return `${before}${after}`.replace(/\s+([?.!,])/g, "$1").replace(/\s{2,}/g, " ").trim();
   }
 
   return reply;
