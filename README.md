@@ -7,6 +7,7 @@ Current pieces:
 - Transcript sync writes turns, caller name, and memory into Supabase
 - Edge function scaffold for call orchestration
 - OpenRouter Meta Llama 3.3 70B Instruct configured as the brain default
+- Groq Whisper configured for STT
 - ElevenLabs used for voice output
 - Twilio outbound call starter and voice webhook scaffold
 - Railway bridge server for Twilio media streams
@@ -51,8 +52,8 @@ Bridge env vars:
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct`
 - `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `GEMINI_API_KEY` for STT only
-- `GEMINI_MODEL=gemini-2.5-flash`
+- `GROQ_API_KEY` for STT
+- `GROQ_STT_MODEL=whisper-large-v3-turbo`
 - `SARVAM_API_KEY`
 - `SARVAM_VOICE_ID`
 - `SARVAM_TTS_URL=https://api.sarvam.ai/text-to-speech`

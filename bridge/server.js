@@ -10,8 +10,8 @@ const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
 const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
 const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
-const GEMINI_API_KEY = envText("GEMINI_API_KEY");
-const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
+const GROQ_API_KEY = envText("GROQ_API_KEY");
+const GROQ_STT_MODEL = envText("GROQ_STT_MODEL", "whisper-large-v3-turbo");
 const SARVAM_API_KEY = envText("SARVAM_API_KEY");
 const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID", "shubh");
 const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech");
@@ -50,8 +50,8 @@ const state = {
   sarvamErrors: 0,
   openrouterRequests: 0,
   openrouterErrors: 0,
-  geminiSttRequests: 0,
-  geminiSttErrors: 0,
+  groqSttRequests: 0,
+  groqSttErrors: 0,
 };
 
 function json(res, statusCode, data) {
@@ -74,8 +74,8 @@ logEvent({
   sarvam_tts_url: SARVAM_TTS_URL,
   openrouter_api_key_configured: Boolean(OPENROUTER_API_KEY),
   openrouter_model: OPENROUTER_MODEL,
-  gemini_stt_api_key_configured: Boolean(GEMINI_API_KEY),
-  gemini_stt_model: GEMINI_MODEL,
+  groq_stt_api_key_configured: Boolean(GROQ_API_KEY),
+  groq_stt_model: GROQ_STT_MODEL,
 });
 
 const MULAW_BIAS = 0x84;
@@ -260,41 +260,38 @@ async function extractImportantMemory(transcript) {
   }
 }
 
-async function transcribeAudioWithGemini(audioWavBase64, language) {
-  if (!GEMINI_API_KEY || !audioWavBase64) return "";
+async function transcribeAudioWithGroq(audioWavBase64, language) {
+  if (!GROQ_API_KEY || !audioWavBase64) return "";
 
   try {
-    state.geminiSttRequests += 1;
+    state.groqSttRequests += 1;
     const audioBuffer = Buffer.from(audioWavBase64, "base64");
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+    const formData = new FormData();
+    formData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
+    formData.append("model", GROQ_STT_MODEL);
+    formData.append("response_format", "json");
+    formData.append("temperature", "0");
+    const normalizedLanguage = language === "hi" ? "hi" : language === "hinglish" ? "hi" : "en";
+    formData.append("language", normalizedLanguage);
+
+    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: `Transcribe the caller audio exactly. Return only the transcript text in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Do not add commentary.` }],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: "Audio to transcribe:" },
-              { inline_data: { mime_type: "audio/wav", data: audioBuffer.toString("base64") } },
-            ],
-          },
-        ],
-      }),
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: formData,
     });
 
     if (!response.ok) {
-      state.geminiSttErrors += 1;
+      state.groqSttErrors += 1;
+      const details = await response.text().catch(() => "");
+      logEvent({ type: "groq.error", status: response.status, statusText: response.statusText, details, stage: "transcribe" });
       return "";
     }
 
     const payload = await response.json();
-    return (payload?.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("").trim();
+    return typeof payload?.text === "string" ? payload.text.trim() : "";
   } catch (error) {
-    state.geminiSttErrors += 1;
-    logEvent({ type: "gemini.error", error: error.message, stage: "transcribe" });
+    state.groqSttErrors += 1;
+    logEvent({ type: "groq.error", error: error.message, stage: "transcribe" });
     return "";
   }
 }
@@ -515,8 +512,8 @@ const server = http.createServer((req, res) => {
       sarvamErrors: state.sarvamErrors,
       openrouterRequests: state.openrouterRequests,
       openrouterErrors: state.openrouterErrors,
-      geminiSttRequests: state.geminiSttRequests,
-      geminiSttErrors: state.geminiSttErrors,
+      groqSttRequests: state.groqSttRequests,
+      groqSttErrors: state.groqSttErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -630,7 +627,7 @@ wss.on("connection", async (twilioWs, req) => {
     turnQueued = false;
 
     try {
-      const transcript = await transcribeAudioWithGemini(twilioMulawToWavBase64(packets), conversationLanguage);
+      const transcript = await transcribeAudioWithGroq(twilioMulawToWavBase64(packets), conversationLanguage);
       if (transcript) {
         userTranscript = `${userTranscript} ${transcript}`.trim();
         conversationLanguage = detectLanguageMode(transcript) || conversationLanguage;
