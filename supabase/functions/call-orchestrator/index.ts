@@ -35,9 +35,10 @@ const corsHeaders = {
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
-const realtimeModel = Deno.env.get("OPENAI_REALTIME_MODEL") ?? "gpt-realtime-2.1";
-const sarvamVoiceId = Deno.env.get("SARVAM_VOICE_ID") ?? "";
-const sarvamApiKey = Deno.env.get("SARVAM_API_KEY") ?? "";
+const geminiModel = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash";
+const geminiApiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
+const elevenLabsVoiceId = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
+const elevenLabsApiKey = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 
 const admin = createClient(supabaseUrl, serviceRoleKey, {
   auth: {
@@ -213,7 +214,7 @@ Deno.serve(async (req) => {
 
   const { data: settings } = await admin
     .from("agent_settings")
-    .select("agent_name,system_prompt,openai_realtime_model,sarvam_voice_id,sarvam_language")
+    .select("agent_name,system_prompt")
     .eq("id", 1)
     .maybeSingle();
 
@@ -222,14 +223,14 @@ Deno.serve(async (req) => {
       session_id: sessionId,
       caller_id: callerId,
       brain: {
-        model: settings?.openai_realtime_model ?? realtimeModel,
+        model: geminiModel,
         system_prompt: settings?.system_prompt ?? "",
+        api_key_configured: Boolean(geminiApiKey),
       },
       voice: {
-        provider: "sarvam",
-        voice_id: settings?.sarvam_voice_id ?? sarvamVoiceId,
-        language: settings?.sarvam_language ?? "auto",
-        api_key_configured: Boolean(sarvamApiKey),
+        provider: "elevenlabs",
+        voice_id: elevenLabsVoiceId,
+        api_key_configured: Boolean(elevenLabsApiKey),
       },
     },
     { headers: corsHeaders },

@@ -6,10 +6,6 @@ const { createClient } = require("@supabase/supabase-js");
 const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1";
-const OPENAI_MEMORY_MODEL = process.env.OPENAI_MEMORY_MODEL || "gpt-4.1-mini";
-const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || "gpt-4.1-mini";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const GEMINI_API_KEY = envText("GEMINI_API_KEY");
 const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
@@ -44,7 +40,6 @@ const state = {
   lastEvent: null,
   lastError: null,
   recentEvents: [],
-  openaiAudioChunks: 0,
   twilioAudioPackets: 0,
   elevenLabsRequests: 0,
   elevenLabsErrors: 0,
@@ -73,6 +68,68 @@ logEvent({
   gemini_api_key_configured: Boolean(GEMINI_API_KEY),
   gemini_model: GEMINI_MODEL,
 });
+
+const MULAW_BIAS = 0x84;
+
+function muLawByteToPcmSample(muLawByte) {
+  const u = (~muLawByte) & 0xff;
+  const sign = u & 0x80;
+  const exponent = (u >> 4) & 0x07;
+  const mantissa = u & 0x0f;
+  let sample = ((mantissa << 3) + MULAW_BIAS) << exponent;
+  sample -= MULAW_BIAS;
+  return sign ? -sample : sample;
+}
+
+function twilioMulawToWavBase64(payloads) {
+  const pcmSamples = [];
+
+  for (const payload of payloads) {
+    const mulaw = Buffer.from(payload, "base64");
+    for (const byte of mulaw) {
+      pcmSamples.push(muLawByteToPcmSample(byte));
+    }
+  }
+
+  const pcmBuffer = Buffer.alloc(pcmSamples.length * 2);
+  for (let i = 0; i < pcmSamples.length; i += 1) {
+    pcmBuffer.writeInt16LE(Math.max(-32768, Math.min(32767, pcmSamples[i])), i * 2);
+  }
+
+  const sampleRate = 8000;
+  const byteRate = sampleRate * 2;
+  const blockAlign = 2;
+  const dataSize = pcmBuffer.length;
+  const wav = Buffer.alloc(44 + dataSize);
+
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + dataSize, 4);
+  wav.write("WAVE", 8);
+  wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(byteRate, 28);
+  wav.writeUInt16LE(blockAlign, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(dataSize, 40);
+  pcmBuffer.copy(wav, 44);
+
+  return wav.toString("base64");
+}
+
+function computePacketEnergy(payload) {
+  const mulaw = Buffer.from(payload, "base64");
+  if (!mulaw.length) return 0;
+
+  let total = 0;
+  for (const byte of mulaw) {
+    total += Math.abs(muLawByteToPcmSample(byte));
+  }
+  return total / mulaw.length;
+}
 
 function xmlEscape(value) {
   return String(value)
@@ -182,7 +239,52 @@ async function extractImportantMemory(transcript) {
   }
 }
 
-async function generateFallbackReply(turns, language) {
+async function transcribeAudioWithGemini(audioWavBase64, language) {
+  if (!GEMINI_API_KEY || !audioWavBase64) return "";
+
+  try {
+    state.geminiRequests += 1;
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: `Transcribe the caller audio exactly. Return only the transcript text in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Do not add commentary.` }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: "Audio to transcribe:" },
+              {
+                inline_data: {
+                  mime_type: "audio/wav",
+                  data: audioWavBase64,
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      state.geminiErrors += 1;
+      return "";
+    }
+
+    const payload = await response.json();
+    return (payload?.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("").trim();
+  } catch (error) {
+    state.geminiErrors += 1;
+    logEvent({ type: "gemini.error", error: error.message, stage: "transcribe" });
+    return "";
+  }
+}
+
+async function generateFallbackReply(turns, language, systemPrompt = "") {
   const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
   if (!GEMINI_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
 
@@ -195,7 +297,7 @@ async function generateFallbackReply(turns, language) {
       },
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: `You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.` }],
+          parts: [{ text: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.` }],
         },
         contents: turns.map((turn) => ({ role: turn.role === "assistant" ? "model" : "user", parts: [{ text: turn.content }] })),
       }),
@@ -298,7 +400,7 @@ async function loadAgentSettings() {
 
   const { data, error } = await client
     .from("agent_settings")
-    .select("agent_name,system_prompt,openai_realtime_model")
+    .select("agent_name,system_prompt")
     .eq("id", 1)
     .maybeSingle();
 
@@ -368,39 +470,6 @@ async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName
   return session;
 }
 
-async function createOpenAIConnection(context, outbound) {
-  if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
-
-  const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(context.model || OPENAI_REALTIME_MODEL)}`, {
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-  });
-
-  ws.on("open", () => {
-    ws.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        type: "realtime",
-        model: context.model || OPENAI_REALTIME_MODEL,
-        instructions: context.systemPrompt,
-        output_modalities: ["text"],
-        audio: {
-          input: {
-            format: { type: "audio/pcmu" },
-            transcription: { model: "gpt-4o-mini-transcribe" },
-            turn_detection: { type: "server_vad", create_response: false, interrupt_response: true },
-          },
-        },
-      },
-    }));
-
-    outbound.onOpen?.();
-  });
-
-  return ws;
-}
-
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
@@ -415,7 +484,6 @@ const server = http.createServer((req, res) => {
       elevenLabsVoiceId: ELEVENLABS_VOICE_ID || null,
       elevenLabsConfigured: Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
       recentEvents: state.recentEvents,
-      openaiAudioChunks: state.openaiAudioChunks,
       twilioAudioPackets: state.twilioAudioPackets,
       elevenLabsRequests: state.elevenLabsRequests,
       elevenLabsErrors: state.elevenLabsErrors,
@@ -474,20 +542,20 @@ wss.on("connection", async (twilioWs, req) => {
   const phoneE164 = url.searchParams.get("phone_e164") || "";
   const fullName = url.searchParams.get("full_name") || "";
 
-  let context = { systemPrompt: "", model: OPENAI_REALTIME_MODEL };
-  let openaiWs = null;
+  let systemPrompt = "";
   let streamSid = "";
   let callSid = "";
   let resolvedSession = { id: sessionId, owner_id: ownerId || null, caller_id: callerId || null };
   let userTranscript = "";
-  let assistantTranscript = "";
   const conversationTurns = [];
   let greeted = false;
   let conversationLanguage = "en";
-  let assistantFallbackTimer = null;
-  let assistantReplied = false;
   let twilioReady = false;
   const pendingTwilioMessages = [];
+  const bufferedSpeechPackets = [];
+  let turnTimer = null;
+  let turnProcessing = false;
+  let turnQueued = false;
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
 
@@ -495,79 +563,45 @@ wss.on("connection", async (twilioWs, req) => {
     if (!twilioReady) pendingTwilioMessages.push(raw);
   });
 
-  twilioWs.on("error", (error) => {
-    state.lastError = error.message;
-    logEvent({ type: "twilio.error", session_id: resolvedSession.id, error: error.message });
-  });
-
-  try {
-    const settings = await loadAgentSettings();
-    context = {
-      systemPrompt: settings.system_prompt || "You are a warm, human-sounding phone assistant. Ask for the caller's name first.",
-      model: settings.openai_realtime_model || OPENAI_REALTIME_MODEL,
-    };
-
-    resolvedSession = await ensureSession({
-      sessionId,
-      ownerId: ownerId || null,
-      callerId: callerId || null,
-      phoneE164,
-      fullName,
-      callSid,
-    });
-
-    openaiWs = await createOpenAIConnection(context, {
-      onOpen: () => {
-        logEvent({ type: "openai.connected", session_id: resolvedSession.id });
-      },
-    });
-
-    openaiWs.on("error", (error) => {
-      state.lastError = error.message;
-      logEvent({ type: "openai.error", session_id: resolvedSession.id, error: error.message });
-    });
-
-    openaiWs.on("close", (code, reason) => {
-      logEvent({ type: "openai.closed", session_id: resolvedSession.id, code, reason: reason.toString() });
-    });
-  } catch (error) {
-    twilioWs.close(1011, error.message);
-    return;
+  function scheduleTurnFlush() {
+    if (turnTimer) clearTimeout(turnTimer);
+    turnTimer = setTimeout(() => {
+      turnTimer = null;
+      void processBufferedTurn();
+    }, 1200);
   }
 
-  openaiWs.on("message", async (raw) => {
+  async function processBufferedTurn() {
+    if (turnProcessing) {
+      turnQueued = true;
+      return;
+    }
+
+    const packets = bufferedSpeechPackets.splice(0);
+    if (!packets.length) {
+      turnQueued = false;
+      return;
+    }
+
+    turnProcessing = true;
+    turnQueued = false;
+
     try {
-      const event = JSON.parse(raw.toString());
-      const eventType = event.type || "";
-
-      if (eventType !== "response.output_text.delta") {
-        logEvent({ type: "openai.event", session_id: resolvedSession.id, event_type: eventType });
-      }
-
-      if (eventType === "error") {
-        state.lastError = event.error?.message || "OpenAI realtime error";
-        logEvent({ type: "openai.error", session_id: resolvedSession.id, error: event.error || event });
-      }
-
-      if (eventType === "conversation.item.input_audio_transcription.completed") {
-        const text = event.transcript || event.text || "";
-        userTranscript = `${userTranscript} ${text}`.trim();
-        conversationLanguage = detectLanguageMode(text) || conversationLanguage;
-        conversationTurns.push({ role: "user", content: text });
+      const transcript = await transcribeAudioWithGemini(twilioMulawToWavBase64(packets), conversationLanguage);
+      if (transcript) {
+        userTranscript = `${userTranscript} ${transcript}`.trim();
+        conversationLanguage = detectLanguageMode(transcript) || conversationLanguage;
+        conversationTurns.push({ role: "user", content: transcript });
         logEvent({
           type: "conversation.line",
           session_id: resolvedSession.id,
           role: "user",
-          content: text,
+          content: transcript,
           language: conversationLanguage,
+          source: "gemini",
         });
 
-        assistantReplied = false;
-        if (assistantFallbackTimer) {
-          clearTimeout(assistantFallbackTimer);
-        }
-
-        const reply = await generateFallbackReply(conversationTurns, conversationLanguage);
+        const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
         conversationTurns.push({ role: "assistant", content: reply });
         conversationLanguage = detectLanguageMode(reply) || conversationLanguage;
         logEvent({
@@ -583,132 +617,116 @@ wss.on("connection", async (twilioWs, req) => {
           logEvent({ type: "elevenlabs.error", error: error.message });
           return null;
         });
-        if (elevenLabsAudio) {
-          assistantReplied = true;
+        if (elevenLabsAudio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
           state.twilioAudioPackets += 1;
           twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: elevenLabsAudio } }));
           logEvent({ type: "audio.sent", source: "elevenlabs", stream_sid: streamSid });
         }
       }
-
-      if (
-        eventType === "response.output_text.delta" ||
-        eventType === "response.text.delta" ||
-        eventType === "response.output_audio_transcript.delta"
-      ) {
-        assistantTranscript += event.delta || event.text || "";
+    } finally {
+      turnProcessing = false;
+      if (turnQueued || bufferedSpeechPackets.length) {
+        turnQueued = false;
+        scheduleTurnFlush();
       }
+    }
+  }
 
-      if (eventType === "response.completed" || eventType === "response.done" || eventType === "response.output_text.done") {
-        const finalText = assistantTranscript.trim();
-        assistantTranscript = "";
-        if (assistantFallbackTimer) {
-          clearTimeout(assistantFallbackTimer);
-          assistantFallbackTimer = null;
-        }
+  async function drainTurns() {
+    if (turnTimer) {
+      clearTimeout(turnTimer);
+      turnTimer = null;
+    }
 
-        if (!assistantReplied && finalText) {
-          assistantReplied = true;
-          conversationTurns.push({ role: "assistant", content: finalText });
-          conversationLanguage = detectLanguageMode(finalText) || conversationLanguage;
-          logEvent({
-            type: "conversation.line",
-            session_id: resolvedSession.id,
-            role: "assistant",
-            content: finalText,
-            language: conversationLanguage,
-          });
+    await processBufferedTurn();
+    while (turnProcessing || bufferedSpeechPackets.length) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 
-          const elevenLabsAudio = await synthesizeWithElevenLabs(finalText, conversationLanguage).catch((error) => {
-            logEvent({ type: "elevenlabs.error", error: error.message });
-            return null;
-          });
-          if (elevenLabsAudio) {
-            state.twilioAudioPackets += 1;
-            twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: elevenLabsAudio } }));
-            logEvent({ type: "audio.sent", source: "elevenlabs", stream_sid: streamSid });
+  twilioWs.on("message", (raw) => {
+    void (async () => {
+      try {
+        const message = JSON.parse(raw.toString());
+
+        if (message.event === "start") {
+          streamSid = message.start.streamSid || "";
+          callSid = message.start.callSid || "";
+          const custom = message.start.customParameters || {};
+          if (!resolvedSession.id && custom.session_id) resolvedSession.id = custom.session_id;
+          if (!resolvedSession.owner_id && custom.owner_id) resolvedSession.owner_id = custom.owner_id;
+          if (!resolvedSession.caller_id && custom.caller_id) resolvedSession.caller_id = custom.caller_id;
+          state.lastSessionId = resolvedSession.id;
+          logEvent({ type: "twilio.start", session_id: resolvedSession.id || sessionId, stream_sid: streamSid, call_sid: callSid, custom_parameters: custom });
+
+          const client = getSupabase();
+          if (!client) {
+            state.lastError = "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY";
+            logEvent({ type: "config.error", session_id: resolvedSession.id, message: state.lastError });
+            twilioWs.close(1011, state.lastError);
+            return;
+          }
+
+          await client
+            .from("call_sessions")
+            .update({
+              provider_call_id: callSid || undefined,
+              metadata: { call_sid: callSid, stream_sid: streamSid, source: "twilio_media_stream" },
+            })
+            .eq("id", resolvedSession.id);
+
+          const settings = await loadAgentSettings();
+          systemPrompt = settings.system_prompt || "You are a warm, human-sounding phone assistant. Ask for the caller's name first.";
+
+          if (!greeted) {
+            greeted = true;
+            const greeting = "Hi, I'm your calling assistant. What name should I use for you?";
+            logEvent({ type: "assistant.greeting", session_id: resolvedSession.id, content: greeting, source: "elevenlabs" });
+            await sendAudioToTwilio(twilioWs, streamSid, greeting, conversationLanguage);
           }
         }
+
+        if (message.event === "media") {
+          if (!state.lastEvent || state.lastEvent.type !== "twilio.media") {
+            logEvent({ type: "twilio.media", session_id: resolvedSession.id });
+          }
+
+          const energy = computePacketEnergy(message.media.payload);
+          if (energy > 160) {
+            bufferedSpeechPackets.push(message.media.payload);
+            scheduleTurnFlush();
+          }
+        }
+
+        if (message.event === "stop") {
+          logEvent({ type: "twilio.stop", session_id: resolvedSession.id });
+          await drainTurns();
+          const fullTranscript = conversationTurns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
+          const extracted = await extractImportantMemory(fullTranscript);
+
+          await pushTranscriptChunk({
+            sessionId: resolvedSession.id,
+            ownerId: resolvedSession.owner_id,
+            callerId: resolvedSession.caller_id,
+            transcript: fullTranscript || userTranscript,
+            fullName,
+            phoneE164,
+            role: "assistant",
+            summary: extracted?.summary || fullTranscript.slice(0, 500),
+            memoryChunk: extracted?.memoryChunk || null,
+            metadata: { language: conversationLanguage },
+            turns: [],
+          }).catch((error) => console.error(error));
+        }
+      } catch (error) {
+        console.error("twilio message error", error);
       }
-    } catch (error) {
-      console.error("openai message error", error);
-    }
+    })();
   });
 
-  twilioWs.on("message", async (raw) => {
-    try {
-      const message = JSON.parse(raw.toString());
-
-      if (message.event === "start") {
-        streamSid = message.start.streamSid || "";
-        callSid = message.start.callSid || "";
-        const custom = message.start.customParameters || {};
-        if (!resolvedSession.id && custom.session_id) resolvedSession.id = custom.session_id;
-        if (!resolvedSession.owner_id && custom.owner_id) resolvedSession.owner_id = custom.owner_id;
-        if (!resolvedSession.caller_id && custom.caller_id) resolvedSession.caller_id = custom.caller_id;
-        state.lastSessionId = resolvedSession.id;
-        logEvent({ type: "twilio.start", session_id: resolvedSession.id || sessionId, stream_sid: streamSid, call_sid: callSid, custom_parameters: custom });
-
-        const client = getSupabase();
-        if (!client) {
-          state.lastError = "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY";
-          logEvent({ type: "config.error", session_id: resolvedSession.id, message: state.lastError });
-          twilioWs.close(1011, state.lastError);
-          return;
-        }
-
-        await client
-          .from("call_sessions")
-          .update({
-            provider_call_id: callSid || undefined,
-            metadata: { call_sid: callSid, stream_sid: streamSid, source: "twilio_media_stream" },
-          })
-          .eq("id", resolvedSession.id);
-
-        if (!greeted) {
-          greeted = true;
-          const greeting = "Hi, I'm your calling assistant. What name should I use for you?";
-          logEvent({ type: "assistant.greeting", session_id: resolvedSession.id, content: greeting });
-          await sendAudioToTwilio(twilioWs, streamSid, greeting, conversationLanguage);
-        }
-      }
-
-      if (message.event === "media" && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-        if (!state.lastEvent || state.lastEvent.type !== "twilio.media") {
-          logEvent({ type: "twilio.media", session_id: resolvedSession.id });
-        }
-        openaiWs.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: message.media.payload,
-        }));
-      }
-
-      if (message.event === "stop") {
-        logEvent({ type: "twilio.stop", session_id: resolvedSession.id });
-        const fullTranscript = conversationTurns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
-        const extracted = await extractImportantMemory(fullTranscript);
-
-        await pushTranscriptChunk({
-          sessionId: resolvedSession.id,
-          ownerId: resolvedSession.owner_id,
-          callerId: resolvedSession.caller_id,
-          transcript: fullTranscript || `${userTranscript}\n${assistantTranscript}`.trim(),
-          fullName,
-          phoneE164,
-          role: "assistant",
-          summary: extracted?.summary || fullTranscript.slice(0, 500),
-          memoryChunk: extracted?.memoryChunk || null,
-          metadata: { language: conversationLanguage },
-          turns: [],
-        }).catch((error) => console.error(error));
-
-        if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-          openaiWs.close();
-        }
-      }
-    } catch (error) {
-      console.error("twilio message error", error);
-    }
+  twilioWs.on("error", (error) => {
+    state.lastError = error.message;
+    logEvent({ type: "twilio.error", session_id: resolvedSession.id, error: error.message });
   });
 
   twilioReady = true;
@@ -719,9 +737,6 @@ wss.on("connection", async (twilioWs, req) => {
   twilioWs.on("close", () => {
     state.activeConnections = Math.max(0, state.activeConnections - 1);
     logEvent({ type: "ws.close", session_id: resolvedSession.id });
-    if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-      openaiWs.close();
-    }
   });
 
   if (twilioWs.readyState === WebSocket.OPEN) {

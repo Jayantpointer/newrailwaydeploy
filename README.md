@@ -48,9 +48,6 @@ Notes:
 
 Bridge env vars:
 
-- `OPENAI_API_KEY`
-- `OPENAI_REALTIME_MODEL=gpt-realtime-2.1`
-- `OPENAI_MEMORY_MODEL=gpt-4.1-mini`
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL=gemini-2.5-flash`
 - `ELEVENLABS_API_KEY`
