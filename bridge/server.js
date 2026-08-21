@@ -7,9 +7,9 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
-const SAMBANOVA_API_KEY = envText("SAMBANOVA_API_KEY");
-const SAMBANOVA_MODEL = envText("SAMBANOVA_MODEL", "Meta-Llama-3.3-70B-Instruct");
-const SAMBANOVA_BASE_URL = envText("SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1");
+const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
+const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
+const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
 const GROQ_API_KEY = envText("GROQ_API_KEY");
 const GROQ_STT_MODEL = envText("GROQ_STT_MODEL", "whisper-large-v3-turbo");
 const SARVAM_API_KEY = envText("SARVAM_API_KEY");
@@ -48,8 +48,8 @@ const state = {
   twilioAudioPackets: 0,
   sarvamRequests: 0,
   sarvamErrors: 0,
-  sambanovaRequests: 0,
-  sambanovaErrors: 0,
+  openrouterRequests: 0,
+  openrouterErrors: 0,
   groqSttRequests: 0,
   groqSttErrors: 0,
 };
@@ -72,8 +72,8 @@ logEvent({
   sarvam_api_key_configured: Boolean(SARVAM_API_KEY),
   sarvam_voice_id_configured: Boolean(SARVAM_VOICE_ID),
   sarvam_tts_url: SARVAM_TTS_URL,
-  sambanova_api_key_configured: Boolean(SAMBANOVA_API_KEY),
-  sambanova_model: SAMBANOVA_MODEL,
+  openrouter_api_key_configured: Boolean(OPENROUTER_API_KEY),
+  openrouter_model: OPENROUTER_MODEL,
   groq_stt_api_key_configured: Boolean(GROQ_API_KEY),
   groq_stt_model: GROQ_STT_MODEL,
 });
@@ -216,18 +216,18 @@ async function extractImportantMemory(transcript) {
   const text = transcript.trim();
   if (!text) return null;
 
-  if (!SAMBANOVA_API_KEY) return null;
+  if (!OPENROUTER_API_KEY) return null;
 
   try {
-    state.sambanovaRequests += 1;
-    const response = await fetch(`${SAMBANOVA_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+    state.openrouterRequests += 1;
+    const response = await fetch(`${OPENROUTER_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${SAMBANOVA_API_KEY}`,
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
       },
       body: JSON.stringify({
-        model: SAMBANOVA_MODEL,
+        model: OPENROUTER_MODEL,
         max_tokens: 400,
         temperature: 0,
         messages: [
@@ -246,8 +246,8 @@ async function extractImportantMemory(transcript) {
 
     if (!response.ok) {
       const details = await response.text().catch(() => "");
-      state.sambanovaErrors += 1;
-      logEvent({ type: "sambanova.error", status: response.status, statusText: response.statusText, details });
+      state.openrouterErrors += 1;
+      logEvent({ type: "openrouter.error", status: response.status, statusText: response.statusText, details });
       return null;
     }
 
@@ -262,7 +262,7 @@ async function extractImportantMemory(transcript) {
       memoryChunk: memoryChunk && memoryChunk.content ? { ...memoryChunk, symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [] } : null,
     };
   } catch {
-    state.sambanovaErrors += 1;
+    state.openrouterErrors += 1;
     const fallback = buildFallbackMemoryChunk(text);
     return {
       summary: text.slice(0, 500),
@@ -309,18 +309,18 @@ async function transcribeAudioWithGroq(audioWavBase64, language) {
 
 async function generateFallbackReply(turns, language, systemPrompt = "") {
   const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
-  if (!SAMBANOVA_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
+  if (!OPENROUTER_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
 
   try {
-    state.sambanovaRequests += 1;
-    const response = await fetch(`${SAMBANOVA_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+    state.openrouterRequests += 1;
+    const response = await fetch(`${OPENROUTER_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${SAMBANOVA_API_KEY}`,
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
       },
       body: JSON.stringify({
-        model: SAMBANOVA_MODEL,
+        model: OPENROUTER_MODEL,
         max_tokens: 300,
         temperature: 0.1,
         messages: [
@@ -335,15 +335,15 @@ async function generateFallbackReply(turns, language, systemPrompt = "") {
 
     if (!response.ok) {
       const details = await response.text().catch(() => "");
-      state.sambanovaErrors += 1;
-      logEvent({ type: "sambanova.error", status: response.status, statusText: response.statusText, details });
+      state.openrouterErrors += 1;
+      logEvent({ type: "openrouter.error", status: response.status, statusText: response.statusText, details });
       return "Sorry, I didn’t catch that. What name should I use for you?";
     }
 
     const payload = await response.json();
     return normalizeAssistantReply(payload?.choices?.[0]?.message?.content);
   } catch {
-    state.sambanovaErrors += 1;
+    state.openrouterErrors += 1;
     return "Sorry, I didn’t catch that. What name should I use for you?";
   }
 }
@@ -521,8 +521,8 @@ const server = http.createServer((req, res) => {
       twilioAudioPackets: state.twilioAudioPackets,
       sarvamRequests: state.sarvamRequests,
       sarvamErrors: state.sarvamErrors,
-      sambanovaRequests: state.sambanovaRequests,
-      sambanovaErrors: state.sambanovaErrors,
+      openrouterRequests: state.openrouterRequests,
+      openrouterErrors: state.openrouterErrors,
       groqSttRequests: state.groqSttRequests,
       groqSttErrors: state.groqSttErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
@@ -649,7 +649,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "user",
           content: transcript,
           language: conversationLanguage,
-          source: "sambanova",
+          source: "openrouter",
         });
 
         const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
@@ -661,7 +661,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "assistant",
           content: reply,
           language: conversationLanguage,
-          source: "sambanova",
+          source: "openrouter",
         });
 
         const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {

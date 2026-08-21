@@ -6,7 +6,7 @@ Current pieces:
 - Memory chunks stored in `memory_chunks`
 - Transcript sync writes turns, caller name, and memory into Supabase
 - Edge function scaffold for call orchestration
-- SambaNova Meta Llama 3.3 70B Instruct configured as the brain default
+- OpenRouter Meta Llama 3.3 70B Instruct configured as the brain default
 - Groq Whisper configured for STT
 - ElevenLabs used for voice output
 - Twilio outbound call starter and voice webhook scaffold
@@ -51,9 +51,9 @@ Notes:
 
 Bridge env vars:
 
-- `SAMBANOVA_API_KEY`
-- `SAMBANOVA_MODEL=Meta-Llama-3.3-70B-Instruct`
-- `SAMBANOVA_BASE_URL=https://api.sambanova.ai/v1`
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct`
+- `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
 - `GROQ_API_KEY` for STT
 - `GROQ_STT_MODEL=whisper-large-v3-turbo`
 - `SARVAM_API_KEY`
