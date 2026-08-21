@@ -9,8 +9,8 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
 const ANTHROPIC_MODEL = envText("ANTHROPIC_MODEL", "claude-sonnet-5");
-const GROQ_API_KEY = envText("GROQ_API_KEY");
-const GROQ_STT_MODEL = envText("GROQ_STT_MODEL", "whisper-large-v3-turbo");
+const GEMINI_API_KEY = envText("GEMINI_API_KEY");
+const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
@@ -48,8 +48,8 @@ const state = {
   elevenLabsErrors: 0,
   anthropicRequests: 0,
   anthropicErrors: 0,
-  groqSttRequests: 0,
-  groqSttErrors: 0,
+  geminiSttRequests: 0,
+  geminiSttErrors: 0,
 };
 
 function json(res, statusCode, data) {
@@ -72,8 +72,8 @@ logEvent({
   elevenlabs_model_id: ELEVENLABS_MODEL_ID,
   anthropic_api_key_configured: Boolean(ANTHROPIC_API_KEY),
   anthropic_model: ANTHROPIC_MODEL,
-  groq_stt_api_key_configured: Boolean(GROQ_API_KEY),
-  groq_stt_model: GROQ_STT_MODEL,
+  gemini_stt_api_key_configured: Boolean(GEMINI_API_KEY),
+  gemini_stt_model: GEMINI_MODEL,
 });
 
 const MULAW_BIAS = 0x84;
@@ -249,33 +249,41 @@ async function extractImportantMemory(transcript) {
   }
 }
 
-async function transcribeAudioWithGroq(audioWavBase64, language) {
-  if (!GROQ_API_KEY || !audioWavBase64) return "";
+async function transcribeAudioWithGemini(audioWavBase64, language) {
+  if (!GEMINI_API_KEY || !audioWavBase64) return "";
 
   try {
-    state.groqSttRequests += 1;
+    state.geminiSttRequests += 1;
     const audioBuffer = Buffer.from(audioWavBase64, "base64");
-    const form = new FormData();
-    form.append("model", GROQ_STT_MODEL);
-    form.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
-    if (language === "hi") form.append("language", "hi");
-
-    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
-      body: form,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: `Transcribe the caller audio exactly. Return only the transcript text in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Do not add commentary.` }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: "Audio to transcribe:" },
+              { inline_data: { mime_type: "audio/wav", data: audioBuffer.toString("base64") } },
+            ],
+          },
+        ],
+      }),
     });
 
     if (!response.ok) {
-      state.groqSttErrors += 1;
+      state.geminiSttErrors += 1;
       return "";
     }
 
     const payload = await response.json();
-    return (payload?.text || "").trim();
+    return (payload?.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("").trim();
   } catch (error) {
-    state.groqSttErrors += 1;
-    logEvent({ type: "groq.error", error: error.message, stage: "transcribe" });
+    state.geminiSttErrors += 1;
+    logEvent({ type: "gemini.error", error: error.message, stage: "transcribe" });
     return "";
   }
 }
@@ -488,8 +496,8 @@ const server = http.createServer((req, res) => {
       elevenLabsErrors: state.elevenLabsErrors,
       anthropicRequests: state.anthropicRequests,
       anthropicErrors: state.anthropicErrors,
-      groqSttRequests: state.groqSttRequests,
-      groqSttErrors: state.groqSttErrors,
+      geminiSttRequests: state.geminiSttRequests,
+      geminiSttErrors: state.geminiSttErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -588,7 +596,7 @@ wss.on("connection", async (twilioWs, req) => {
     turnQueued = false;
 
     try {
-      const transcript = await transcribeAudioWithGroq(twilioMulawToWavBase64(packets), conversationLanguage);
+      const transcript = await transcribeAudioWithGemini(twilioMulawToWavBase64(packets), conversationLanguage);
       if (transcript) {
         userTranscript = `${userTranscript} ${transcript}`.trim();
         conversationLanguage = detectLanguageMode(transcript) || conversationLanguage;
