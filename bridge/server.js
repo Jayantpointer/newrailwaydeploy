@@ -280,6 +280,23 @@ async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
   }
 }
 
+function sendBufferedOpenAIAudio(twilioWs, streamSid, chunks) {
+  if (!streamSid || twilioWs.readyState !== WebSocket.OPEN) return;
+
+  for (const payload of chunks) {
+    state.twilioAudioPackets += 1;
+    twilioWs.send(JSON.stringify({
+      event: "media",
+      streamSid,
+      media: { payload },
+    }));
+  }
+
+  if (chunks.length) {
+    logEvent({ type: "audio.sent", source: "openai_realtime_buffer", stream_sid: streamSid, chunks: chunks.length });
+  }
+}
+
 async function loadAgentSettings() {
   const client = getSupabase();
   if (!client) {
@@ -487,7 +504,7 @@ wss.on("connection", async (twilioWs, req) => {
   let conversationLanguage = "en";
   let assistantFallbackTimer = null;
   let assistantReplied = false;
-  let realtimeAudioSent = false;
+  let realtimeAudioChunks = [];
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
 
@@ -547,22 +564,13 @@ wss.on("connection", async (twilioWs, req) => {
 
       if (eventType === "response.audio.delta" || eventType === "response.output_audio.delta") {
         state.openaiAudioChunks += 1;
-        realtimeAudioSent = true;
+        realtimeAudioChunks.push(event.delta);
         assistantReplied = true;
         if (assistantFallbackTimer) {
           clearTimeout(assistantFallbackTimer);
           assistantFallbackTimer = null;
         }
 
-        if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-          state.twilioAudioPackets += 1;
-          logEvent({ type: "audio.sent", source: "openai_realtime", stream_sid: streamSid });
-          twilioWs.send(JSON.stringify({
-            event: "media",
-            streamSid,
-            media: { payload: event.delta },
-          }));
-        }
       }
 
       if (eventType === "conversation.item.input_audio_transcription.completed") {
@@ -579,7 +587,7 @@ wss.on("connection", async (twilioWs, req) => {
         });
 
         assistantReplied = false;
-        realtimeAudioSent = false;
+        realtimeAudioChunks = [];
         if (assistantFallbackTimer) {
           clearTimeout(assistantFallbackTimer);
         }
@@ -596,8 +604,15 @@ wss.on("connection", async (twilioWs, req) => {
             language: conversationLanguage,
             source: "fallback",
           });
-          if (!realtimeAudioSent) {
-            await sendAudioToTwilio(twilioWs, streamSid, reply, conversationLanguage).catch((error) => console.error(error));
+          const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {
+            logEvent({ type: "sarvam.error", error: error.message });
+            return null;
+          });
+          if (sarvamAudio) {
+            state.twilioAudioPackets += 1;
+            twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
+          } else {
+            sendBufferedOpenAIAudio(twilioWs, streamSid, realtimeAudioChunks);
           }
         }, 3500);
       }
@@ -630,9 +645,18 @@ wss.on("connection", async (twilioWs, req) => {
             language: conversationLanguage,
           });
 
-          if (!realtimeAudioSent) {
-            await sendAudioToTwilio(twilioWs, streamSid, finalText, conversationLanguage).catch((error) => console.error(error));
+          const sarvamAudio = await synthesizeWithSarvam(finalText, conversationLanguage).catch((error) => {
+            logEvent({ type: "sarvam.error", error: error.message });
+            return null;
+          });
+          if (sarvamAudio) {
+            state.twilioAudioPackets += 1;
+            twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
+            logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
+          } else {
+            sendBufferedOpenAIAudio(twilioWs, streamSid, realtimeAudioChunks);
           }
+          realtimeAudioChunks = [];
         }
       }
     } catch (error) {
