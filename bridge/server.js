@@ -490,7 +490,7 @@ async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
-  if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/health" || url.pathname === "/healthz")) {
+  if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/health" || url.pathname === "/healthz" || url.pathname === "/media-stream")) {
     return json(res, 200, {
       ok: true,
       activeConnections: state.activeConnections,
