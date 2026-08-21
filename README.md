@@ -59,8 +59,10 @@ Bridge env vars:
 - `SARVAM_API_KEY`
 - `SARVAM_VOICE_ID`
 - `SARVAM_TTS_URL=https://api.sarvam.ai/text-to-speech`
-- `SARVAM_LANGUAGE=auto`
+- `SARVAM_LANGUAGE=auto` to follow the caller's detected language
 - `TWILIO_STATUS_CALLBACK_URL`
 - `CALL_MEMORY_SYNC_URL`
+
+When `SARVAM_LANGUAGE=auto`, Groq Whisper detects the caller's language and the bridge instructs OpenRouter to reply in that language. Sarvam TTS supports English, Hindi, Bengali, Gujarati, Kannada, Malayalam, Marathi, Odia, Punjabi, Tamil, Telugu, and Hinglish through Hindi voice output.
 
 Run locally with `npm install` then `npm start`.

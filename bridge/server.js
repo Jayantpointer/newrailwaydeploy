@@ -282,8 +282,60 @@ function computePacketEnergy(payload) {
 }
 
 function sarvamLanguageCode(language) {
-  if (language === "hi" || language === "hinglish") return "hi-IN";
-  return "en-IN";
+  const languageCodes = {
+    en: "en-IN",
+    hi: "hi-IN",
+    hinglish: "hi-IN",
+    bn: "bn-IN",
+    gu: "gu-IN",
+    kn: "kn-IN",
+    ml: "ml-IN",
+    mr: "mr-IN",
+    od: "od-IN",
+    pa: "pa-IN",
+    ta: "ta-IN",
+    te: "te-IN",
+  };
+
+  return languageCodes[language] || "en-IN";
+}
+
+const LANGUAGE_LABELS = {
+  en: "English",
+  hi: "Hindi",
+  hinglish: "Hinglish",
+  bn: "Bengali",
+  gu: "Gujarati",
+  kn: "Kannada",
+  ml: "Malayalam",
+  mr: "Marathi",
+  od: "Odia",
+  pa: "Punjabi",
+  ta: "Tamil",
+  te: "Telugu",
+};
+
+function languageModeFromCode(language) {
+  const raw = String(language || "").trim().toLowerCase();
+  const aliases = {
+    english: "en",
+    hindi: "hi",
+    bengali: "bn",
+    gujarati: "gu",
+    kannada: "kn",
+    malayalam: "ml",
+    marathi: "mr",
+    odia: "od",
+    punjabi: "pa",
+    tamil: "ta",
+    telugu: "te",
+  };
+  const code = (aliases[raw] || raw).replace("_", "-").split("-")[0];
+  return LANGUAGE_LABELS[code] ? code : "";
+}
+
+function languageInstruction(language) {
+  return LANGUAGE_LABELS[language] || "the same language as the caller";
 }
 
 function xmlEscape(value) {
@@ -295,16 +347,35 @@ function xmlEscape(value) {
     .replaceAll("'", "&apos;");
 }
 
-function detectLanguageMode(text) {
+function detectLanguageMode(text, hintedLanguage = "") {
   const sample = (text || "").trim();
-  if (!sample) return "en";
+  const hinted = languageModeFromCode(hintedLanguage) || (LANGUAGE_LABELS[hintedLanguage] ? hintedLanguage : "");
+  if (!sample) return hinted || "en";
 
   const hasHindiScript = /[\u0900-\u097F]/.test(sample);
+  const hasBengaliScript = /[\u0980-\u09FF]/.test(sample);
+  const hasPunjabiScript = /[\u0A00-\u0A7F]/.test(sample);
+  const hasGujaratiScript = /[\u0A80-\u0AFF]/.test(sample);
+  const hasOdiaScript = /[\u0B00-\u0B7F]/.test(sample);
+  const hasTamilScript = /[\u0B80-\u0BFF]/.test(sample);
+  const hasTeluguScript = /[\u0C00-\u0C7F]/.test(sample);
+  const hasKannadaScript = /[\u0C80-\u0CFF]/.test(sample);
+  const hasMalayalamScript = /[\u0D00-\u0D7F]/.test(sample);
   const hasEnglishWords = /\b(the|and|you|call|name|hello|thanks|yes|no|please)\b/i.test(sample);
   const hasRomanHindi = /\b(ka|ki|ke|hai|haan|nahi|nahi|kya|mera|meri|aap|main|mein|thoda|thodi|abhi|kal|aaj|phone|baad)\b/i.test(sample);
 
+  if (hasBengaliScript) return "bn";
+  if (hasPunjabiScript) return "pa";
+  if (hasGujaratiScript) return "gu";
+  if (hasOdiaScript) return "od";
+  if (hasTamilScript) return "ta";
+  if (hasTeluguScript) return "te";
+  if (hasKannadaScript) return "kn";
+  if (hasMalayalamScript) return "ml";
   if (hasHindiScript && hasEnglishWords) return "hinglish";
-  if (hasHindiScript || hasRomanHindi) return "hi";
+  if (hasHindiScript) return hinted === "mr" ? "mr" : "hi";
+  if (hasRomanHindi) return "hinglish";
+  if (hinted) return hinted;
   if (hasEnglishWords) return "en";
   return "en";
 }
@@ -413,7 +484,7 @@ async function extractImportantMemory(transcript) {
 }
 
 async function transcribeAudioWithGroq(audioWavBase64, language) {
-  if (!GROQ_API_KEY || !audioWavBase64) return "";
+  if (!GROQ_API_KEY || !audioWavBase64) return { text: "", language: "" };
 
   try {
     state.groqSttRequests += 1;
@@ -421,10 +492,14 @@ async function transcribeAudioWithGroq(audioWavBase64, language) {
     const formData = new FormData();
     formData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
     formData.append("model", GROQ_STT_MODEL);
-    formData.append("response_format", "json");
+    formData.append("response_format", "verbose_json");
     formData.append("temperature", "0");
-    const normalizedLanguage = language === "hi" ? "hi" : language === "hinglish" ? "hi" : "en";
-    formData.append("language", normalizedLanguage);
+    const requestedLanguage = languageModeFromCode(language);
+    if (requestedLanguage && requestedLanguage !== "hinglish") {
+      formData.append("language", requestedLanguage);
+    } else if (requestedLanguage === "hinglish") {
+      formData.append("language", "hi");
+    }
 
     const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
@@ -436,15 +511,18 @@ async function transcribeAudioWithGroq(audioWavBase64, language) {
       state.groqSttErrors += 1;
       const details = await response.text().catch(() => "");
       logEvent({ type: "groq.error", status: response.status, statusText: response.statusText, details, stage: "transcribe" });
-      return "";
+      return { text: "", language: "" };
     }
 
     const payload = await response.json();
-    return typeof payload?.text === "string" ? payload.text.trim() : "";
+    return {
+      text: typeof payload?.text === "string" ? payload.text.trim() : "",
+      language: languageModeFromCode(payload?.language),
+    };
   } catch (error) {
     state.groqSttErrors += 1;
     logEvent({ type: "groq.error", error: error.message, stage: "transcribe" });
-    return "";
+    return { text: "", language: "" };
   }
 }
 
@@ -467,7 +545,7 @@ async function generateFallbackReply(turns, language, systemPrompt = "") {
         messages: [
           {
             role: "system",
-            content: `${systemPrompt ? `${systemPrompt}\n\n` : ""}${HUMAN_CALLING_SYSTEM_PROMPT}\n\nSpeak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep the next reply appropriate for this exact conversation.`,
+            content: `${systemPrompt ? `${systemPrompt}\n\n` : ""}${HUMAN_CALLING_SYSTEM_PROMPT}\n\nReply in ${languageInstruction(language)}. Keep the next reply appropriate for this exact conversation. Do not switch languages unless the caller switches languages first.`,
           },
           ...turns.map((turn) => ({
             role: turn.role === "assistant" ? "assistant" : "user",
@@ -744,7 +822,7 @@ wss.on("connection", async (twilioWs, req) => {
   let userTranscript = "";
   const conversationTurns = [];
   let greeted = false;
-  let conversationLanguage = "en";
+  let conversationLanguage = "auto";
   let twilioReady = false;
   const pendingTwilioMessages = [];
   const bufferedSpeechPackets = [];
@@ -782,10 +860,11 @@ wss.on("connection", async (twilioWs, req) => {
     turnQueued = false;
 
     try {
-      const transcript = await transcribeAudioWithGroq(twilioMulawToWavBase64(packets), conversationLanguage);
+      const transcription = await transcribeAudioWithGroq(twilioMulawToWavBase64(packets), conversationLanguage);
+      const transcript = transcription.text;
       if (transcript) {
         userTranscript = `${userTranscript} ${transcript}`.trim();
-        conversationLanguage = detectLanguageMode(transcript) || conversationLanguage;
+        conversationLanguage = detectLanguageMode(transcript, transcription.language || conversationLanguage);
         conversationTurns.push({ role: "user", content: transcript });
         logEvent({
           type: "conversation.line",
@@ -798,7 +877,6 @@ wss.on("connection", async (twilioWs, req) => {
 
         const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
         conversationTurns.push({ role: "assistant", content: reply });
-        conversationLanguage = detectLanguageMode(reply) || conversationLanguage;
         logEvent({
           type: "conversation.line",
           session_id: resolvedSession.id,
