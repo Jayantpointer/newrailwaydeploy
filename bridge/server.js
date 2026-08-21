@@ -19,7 +19,7 @@ function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
 
-const TURN_SILENCE_MS = 2600;
+const TURN_SILENCE_MS = 1000;
 
 let supabase = null;
 
