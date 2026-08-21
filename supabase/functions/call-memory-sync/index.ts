@@ -65,7 +65,7 @@ function detectLanguageMode(text: string) {
 }
 
 async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | null, callerId: string | null, language: string) {
-  const content = payload.memory_chunk?.content?.trim() || payload.summary?.trim() || payload.transcript?.trim();
+  const content = payload.memory_chunk?.content?.trim() || payload.summary?.trim();
   if (!content) return;
 
   const { error } = await admin.from("memory_chunks").insert({
@@ -74,7 +74,7 @@ async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | nul
     session_id: payload.session_id,
     chunk_type: payload.memory_chunk?.chunk_type ?? "call_memory",
     content,
-    source_text: payload.memory_chunk?.source_text ?? payload.transcript ?? payload.summary ?? null,
+    source_text: payload.memory_chunk?.source_text ?? payload.summary ?? null,
     facts: payload.memory_chunk?.facts ?? {},
     tags: payload.memory_chunk?.tags ?? [],
     language,
@@ -122,7 +122,6 @@ Deno.serve(async (req) => {
       owner_id: ownerId,
       caller_id: callerId,
       summary: body.summary ?? undefined,
-      transcript: body.transcript ?? undefined,
       last_activity_at: new Date().toISOString(),
       metadata: {
         ...(body.metadata ?? {}),
@@ -148,22 +147,6 @@ Deno.serve(async (req) => {
   }
 
   const symptomList = Array.isArray(body.memory_chunk?.symptoms) ? body.memory_chunk?.symptoms.filter(Boolean) : [];
-
-  if (body.turns?.length) {
-    const rows = body.turns.map((turn) => ({
-      session_id: body.session_id,
-      owner_id: ownerId,
-      caller_id: callerId,
-      role: turn.role,
-      content: turn.content,
-      metadata: { source: "transcript_sync", language },
-    }));
-
-    const { error: turnsError } = await admin.from("call_turns").insert(rows);
-    if (turnsError) {
-      return Response.json({ error: turnsError.message }, { status: 400, headers: corsHeaders });
-    }
-  }
 
   const transcript = body.transcript ?? "";
   const detectedName = body.full_name ?? detectCallerName(transcript);

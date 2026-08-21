@@ -131,7 +131,7 @@ async function extractImportantMemory(transcript) {
           {
             role: "system",
             content:
-              "Extract only durable call memory. Return JSON with summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Keep content short and factual.",
+              "Extract only durable, non-sensitive call memory. Return JSON with summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
           },
           {
             role: "user",
@@ -225,41 +225,6 @@ async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
       streamSid,
       media: { payload: audioBase64 },
     }));
-  }
-}
-
-async function recordTurn({ sessionId, ownerId, callerId, role, content, metadata = {} }) {
-  const line = content.trim();
-  if (!line) return;
-
-  logEvent({
-    type: "conversation.line",
-    session_id: sessionId,
-    role,
-    content: line,
-  });
-
-  const client = getSupabase();
-  if (!client) {
-    state.lastError = "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY";
-    logEvent({ type: "config.error", message: state.lastError });
-    return;
-  }
-
-  const { error } = await client.from("call_turns").insert({
-    session_id: sessionId,
-    owner_id: ownerId || null,
-    caller_id: callerId || null,
-    role,
-    content: line,
-    metadata: {
-      source: "railway_bridge",
-      ...metadata,
-    },
-  });
-
-  if (error) {
-    throw error;
   }
 }
 
@@ -524,15 +489,26 @@ wss.on("connection", async (twilioWs, req) => {
         userTranscript = `${userTranscript} ${text}`.trim();
         conversationLanguage = detectLanguageMode(text) || conversationLanguage;
         conversationTurns.push({ role: "user", content: text });
-        await recordTurn({
-          sessionId: resolvedSession.id,
-          ownerId: resolvedSession.owner_id,
-          callerId: resolvedSession.caller_id,
+        logEvent({
+          type: "conversation.line",
+          session_id: resolvedSession.id,
           role: "user",
           content: text,
-          metadata: { source: "openai_transcription", language: conversationLanguage },
-        }).catch((error) => console.error("record user turn failed", error));
+          language: conversationLanguage,
+        });
         await syncChunk(text);
+
+        if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+          openaiWs.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text }],
+            },
+          }));
+          openaiWs.send(JSON.stringify({ type: "response.create" }));
+        }
       }
 
       if (eventType === "response.output_text.delta" || eventType === "response.text.delta") {
@@ -546,14 +522,13 @@ wss.on("connection", async (twilioWs, req) => {
         if (finalText) {
           conversationTurns.push({ role: "assistant", content: finalText });
           conversationLanguage = detectLanguageMode(finalText) || conversationLanguage;
-          await recordTurn({
-            sessionId: resolvedSession.id,
-            ownerId: resolvedSession.owner_id,
-            callerId: resolvedSession.caller_id,
+          logEvent({
+            type: "conversation.line",
+            session_id: resolvedSession.id,
             role: "assistant",
             content: finalText,
-            metadata: { source: "openai_response", language: conversationLanguage },
-          }).catch((error) => console.error("record assistant turn failed", error));
+            language: conversationLanguage,
+          });
           await pushTranscriptChunk({
             sessionId: resolvedSession.id,
             ownerId: resolvedSession.owner_id,
@@ -562,7 +537,6 @@ wss.on("connection", async (twilioWs, req) => {
             fullName,
             phoneE164,
             role: "assistant",
-            turns: [{ role: "assistant", content: finalText }],
             metadata: { language: conversationLanguage },
           });
 
@@ -578,11 +552,15 @@ wss.on("connection", async (twilioWs, req) => {
     try {
       const message = JSON.parse(raw.toString());
 
-  if (message.event === "start") {
+      if (message.event === "start") {
         streamSid = message.start.streamSid || "";
         callSid = message.start.callSid || "";
+        const custom = message.start.customParameters || {};
+        if (!resolvedSession.id && custom.session_id) resolvedSession.id = custom.session_id;
+        if (!resolvedSession.owner_id && custom.owner_id) resolvedSession.owner_id = custom.owner_id;
+        if (!resolvedSession.caller_id && custom.caller_id) resolvedSession.caller_id = custom.caller_id;
         state.lastSessionId = resolvedSession.id;
-        logEvent({ type: "twilio.start", session_id: resolvedSession.id, stream_sid: streamSid, call_sid: callSid });
+        logEvent({ type: "twilio.start", session_id: resolvedSession.id || sessionId, stream_sid: streamSid, call_sid: callSid, custom_parameters: custom });
 
         const client = getSupabase();
         if (!client) {
@@ -603,14 +581,6 @@ wss.on("connection", async (twilioWs, req) => {
         if (!greeted) {
           greeted = true;
           logEvent({ type: "assistant.greeting", session_id: resolvedSession.id, content: "Hi, I’m your calling assistant. What name should I use for you?" });
-          await recordTurn({
-            sessionId: resolvedSession.id,
-            ownerId: resolvedSession.owner_id,
-            callerId: resolvedSession.caller_id,
-            role: "assistant",
-            content: "Hi, I’m your calling assistant. What name should I use for you?",
-            metadata: { source: "initial_greeting", language: conversationLanguage },
-          }).catch((error) => console.error("record greeting failed", error));
         }
       }
 
