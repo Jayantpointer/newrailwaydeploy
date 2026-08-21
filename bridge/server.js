@@ -11,10 +11,14 @@ const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime
 const OPENAI_MEMORY_MODEL = process.env.OPENAI_MEMORY_MODEL || "gpt-4.1-mini";
 const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || "gpt-4.1-mini";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
-const SARVAM_TTS_URL = process.env.SARVAM_TTS_URL || "https://api.sarvam.ai/text-to-speech";
-const SARVAM_API_KEY = process.env.SARVAM_API_KEY || "";
-const SARVAM_VOICE_ID = process.env.SARVAM_VOICE_ID || "";
-const SARVAM_LANGUAGE = process.env.SARVAM_LANGUAGE || "auto";
+function envText(name, fallback = "") {
+  return (process.env[name] || fallback).trim();
+}
+
+const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech");
+const SARVAM_API_KEY = envText("SARVAM_API_KEY");
+const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID");
+const SARVAM_LANGUAGE = envText("SARVAM_LANGUAGE", "auto");
 let sarvamVoiceId = SARVAM_VOICE_ID || "shubh";
 
 let supabase = null;
@@ -240,6 +244,7 @@ async function synthesizeWithSarvam(text, languageHint = "") {
 
   let response;
   try {
+    logEvent({ type: "sarvam.request", url: SARVAM_TTS_URL, language_code: languageCode, speaker });
     response = await fetch(SARVAM_TTS_URL, {
       method: "POST",
       headers: {
@@ -257,7 +262,7 @@ async function synthesizeWithSarvam(text, languageHint = "") {
     });
   } catch (error) {
     state.sarvamErrors += 1;
-    logEvent({ type: "sarvam.error", error: error.message });
+    logEvent({ type: "sarvam.error", error: error.message, url: SARVAM_TTS_URL });
     return null;
   }
 
