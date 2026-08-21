@@ -9,6 +9,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1";
 const OPENAI_MEMORY_MODEL = process.env.OPENAI_MEMORY_MODEL || "gpt-4.1-mini";
+const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || "gpt-4.1-mini";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const SARVAM_TTS_URL = process.env.SARVAM_TTS_URL || "";
 const SARVAM_API_KEY = process.env.SARVAM_API_KEY || "";
@@ -157,6 +158,38 @@ async function extractImportantMemory(transcript) {
       summary: text.slice(0, 500),
       memoryChunk: fallback && fallback.importance >= 75 ? fallback : null,
     };
+  }
+}
+
+async function generateFallbackReply(turns, language) {
+  const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
+  if (!OPENAI_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_FALLBACK_MODEL,
+        temperature: 0.3,
+        messages: [
+          {
+            role: "system",
+            content: `You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
+          },
+          ...turns.map((turn) => ({ role: turn.role, content: turn.content })),
+        ],
+      }),
+    });
+
+    if (!response.ok) return "Sorry, I didn’t catch that. What name should I use for you?";
+    const payload = await response.json();
+    return payload?.choices?.[0]?.message?.content?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
+  } catch {
+    return "Sorry, I didn’t catch that. What name should I use for you?";
   }
 }
 
@@ -420,6 +453,8 @@ wss.on("connection", async (twilioWs, req) => {
   const conversationTurns = [];
   let greeted = false;
   let conversationLanguage = "en";
+  let assistantFallbackTimer = null;
+  let assistantReplied = false;
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
 
@@ -459,22 +494,6 @@ wss.on("connection", async (twilioWs, req) => {
     return;
   }
 
-  const syncChunk = async (text) => {
-    const trimmed = text.trim();
-    if (!trimmed || !CALL_MEMORY_SYNC_URL) return;
-
-    await pushTranscriptChunk({
-      sessionId: resolvedSession.id,
-      ownerId: resolvedSession.owner_id,
-      callerId: resolvedSession.caller_id,
-      transcript: trimmed,
-      fullName,
-      phoneE164,
-      role: "user",
-      turns: [{ role: "user", content: trimmed }],
-    });
-  };
-
   openaiWs.on("message", async (raw) => {
     try {
       const event = JSON.parse(raw.toString());
@@ -496,7 +515,6 @@ wss.on("connection", async (twilioWs, req) => {
           content: text,
           language: conversationLanguage,
         });
-        await syncChunk(text);
 
         if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
           openaiWs.send(JSON.stringify({
@@ -509,6 +527,26 @@ wss.on("connection", async (twilioWs, req) => {
           }));
           openaiWs.send(JSON.stringify({ type: "response.create" }));
         }
+
+        assistantReplied = false;
+        if (assistantFallbackTimer) {
+          clearTimeout(assistantFallbackTimer);
+        }
+
+        assistantFallbackTimer = setTimeout(async () => {
+          if (assistantReplied) return;
+          const reply = await generateFallbackReply(conversationTurns, conversationLanguage);
+          conversationTurns.push({ role: "assistant", content: reply });
+          logEvent({
+            type: "conversation.line",
+            session_id: resolvedSession.id,
+            role: "assistant",
+            content: reply,
+            language: conversationLanguage,
+            source: "fallback",
+          });
+          await sendAudioToTwilio(twilioWs, streamSid, reply, conversationLanguage).catch((error) => console.error(error));
+        }, 3500);
       }
 
       if (eventType === "response.output_text.delta" || eventType === "response.text.delta") {
@@ -518,6 +556,11 @@ wss.on("connection", async (twilioWs, req) => {
       if (eventType === "response.completed" || eventType === "response.output_text.done") {
         const finalText = assistantTranscript.trim();
         assistantTranscript = "";
+        assistantReplied = true;
+        if (assistantFallbackTimer) {
+          clearTimeout(assistantFallbackTimer);
+          assistantFallbackTimer = null;
+        }
 
         if (finalText) {
           conversationTurns.push({ role: "assistant", content: finalText });
@@ -528,16 +571,6 @@ wss.on("connection", async (twilioWs, req) => {
             role: "assistant",
             content: finalText,
             language: conversationLanguage,
-          });
-          await pushTranscriptChunk({
-            sessionId: resolvedSession.id,
-            ownerId: resolvedSession.owner_id,
-            callerId: resolvedSession.caller_id,
-            transcript: finalText,
-            fullName,
-            phoneE164,
-            role: "assistant",
-            metadata: { language: conversationLanguage },
           });
 
           await sendAudioToTwilio(twilioWs, streamSid, finalText, conversationLanguage).catch((error) => console.error(error));
