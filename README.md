@@ -52,9 +52,10 @@ Bridge env vars:
 - `ANTHROPIC_MODEL=claude-sonnet-4-5`
 - `GEMINI_API_KEY` for STT only
 - `GEMINI_MODEL=gemini-2.5-flash`
-- `ELEVENLABS_API_KEY`
-- `ELEVENLABS_VOICE_ID`
-- `ELEVENLABS_MODEL_ID=eleven_multilingual_v2`
+- `SARVAM_API_KEY`
+- `SARVAM_VOICE_ID`
+- `SARVAM_TTS_URL=https://api.sarvam.ai/text-to-speech`
+- `SARVAM_LANGUAGE=auto`
 - `CALL_MEMORY_SYNC_URL`
 
 Run locally with `npm install` then `npm start`.

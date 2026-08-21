@@ -11,13 +11,14 @@ const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
 const ANTHROPIC_MODEL = envText("ANTHROPIC_MODEL", "claude-sonnet-4-5");
 const GEMINI_API_KEY = envText("GEMINI_API_KEY");
 const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
+const SARVAM_API_KEY = envText("SARVAM_API_KEY");
+const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID", "shubh");
+const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech");
+const SARVAM_LANGUAGE = envText("SARVAM_LANGUAGE", "auto");
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
 
-const ELEVENLABS_API_KEY = envText("ELEVENLABS_API_KEY");
-const ELEVENLABS_VOICE_ID = envText("ELEVENLABS_VOICE_ID");
-const ELEVENLABS_MODEL_ID = envText("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2");
 const TURN_SILENCE_MS = 2600;
 
 let supabase = null;
@@ -44,8 +45,8 @@ const state = {
   lastError: null,
   recentEvents: [],
   twilioAudioPackets: 0,
-  elevenLabsRequests: 0,
-  elevenLabsErrors: 0,
+  sarvamRequests: 0,
+  sarvamErrors: 0,
   anthropicRequests: 0,
   anthropicErrors: 0,
   geminiSttRequests: 0,
@@ -66,10 +67,10 @@ function logEvent(event) {
 
 logEvent({
   type: "config.loaded",
-  voice_provider: "elevenlabs",
-  elevenlabs_api_key_configured: Boolean(ELEVENLABS_API_KEY),
-  elevenlabs_voice_id_configured: Boolean(ELEVENLABS_VOICE_ID),
-  elevenlabs_model_id: ELEVENLABS_MODEL_ID,
+  voice_provider: "sarvam",
+  sarvam_api_key_configured: Boolean(SARVAM_API_KEY),
+  sarvam_voice_id_configured: Boolean(SARVAM_VOICE_ID),
+  sarvam_tts_url: SARVAM_TTS_URL,
   anthropic_api_key_configured: Boolean(ANTHROPIC_API_KEY),
   anthropic_model: ANTHROPIC_MODEL,
   gemini_stt_api_key_configured: Boolean(GEMINI_API_KEY),
@@ -136,6 +137,11 @@ function computePacketEnergy(payload) {
     total += Math.abs(muLawByteToPcmSample(byte));
   }
   return total / mulaw.length;
+}
+
+function sarvamLanguageCode(language) {
+  if (language === "hi" || language === "hinglish") return "hi-IN";
+  return "en-IN";
 }
 
 function xmlEscape(value) {
@@ -350,47 +356,49 @@ async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, f
   }
 }
 
-async function synthesizeWithElevenLabs(text, languageHint = "") {
-  if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID || !text.trim()) return null;
+async function synthesizeWithSarvam(text, languageHint = "") {
+  if (!SARVAM_API_KEY || !text.trim()) return null;
 
-  state.elevenLabsRequests += 1;
+  state.sarvamRequests += 1;
   try {
-    const url = new URL(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(ELEVENLABS_VOICE_ID)}/stream`);
-    url.searchParams.set("output_format", "ulaw_8000");
-    logEvent({ type: "elevenlabs.request", voice_id: ELEVENLABS_VOICE_ID, model_id: ELEVENLABS_MODEL_ID });
-
-    const response = await fetch(url, {
+    const language = SARVAM_LANGUAGE === "auto" ? languageHint : SARVAM_LANGUAGE;
+    const response = await fetch(SARVAM_TTS_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "xi-api-key": ELEVENLABS_API_KEY,
+        "api-subscription-key": SARVAM_API_KEY,
       },
       body: JSON.stringify({
         text,
-        model_id: ELEVENLABS_MODEL_ID,
+        model: "bulbul:v3",
+        speaker: SARVAM_VOICE_ID,
+        language_code: sarvamLanguageCode(language),
+        output_audio_codec: "mulaw",
+        speech_sample_rate: 8000,
       }),
     });
 
     if (!response.ok) {
       const details = await response.text().catch(() => "");
-      state.elevenLabsErrors += 1;
-      logEvent({ type: "elevenlabs.error", status: response.status, statusText: response.statusText, details });
+      state.sarvamErrors += 1;
+      logEvent({ type: "sarvam.error", status: response.status, statusText: response.statusText, details });
       return null;
     }
 
-    return Buffer.from(await response.arrayBuffer()).toString("base64");
+    const payload = await response.json();
+    return Array.isArray(payload?.audios) ? payload.audios[0] || null : payload?.audio_base64 || payload?.audio || null;
   } catch (error) {
-    state.elevenLabsErrors += 1;
-    logEvent({ type: "elevenlabs.error", error: error.message });
+    state.sarvamErrors += 1;
+    logEvent({ type: "sarvam.error", error: error.message });
     return null;
   }
 }
 
 async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
-  const audioBase64 = await synthesizeWithElevenLabs(text, languageHint);
+  const audioBase64 = await synthesizeWithSarvam(text, languageHint);
   if (audioBase64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
     state.twilioAudioPackets += 1;
-    logEvent({ type: "audio.sent", source: "elevenlabs", stream_sid: streamSid });
+    logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
     twilioWs.send(JSON.stringify({
       event: "media",
       streamSid,
@@ -489,13 +497,13 @@ const server = http.createServer((req, res) => {
       lastSessionId: state.lastSessionId,
       lastEvent: state.lastEvent,
       lastError: state.lastError,
-      voiceProvider: "elevenlabs",
-      elevenLabsVoiceId: ELEVENLABS_VOICE_ID || null,
-      elevenLabsConfigured: Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
+      voiceProvider: "sarvam",
+      sarvamVoiceId: SARVAM_VOICE_ID || null,
+      sarvamConfigured: Boolean(SARVAM_API_KEY),
       recentEvents: state.recentEvents,
       twilioAudioPackets: state.twilioAudioPackets,
-      elevenLabsRequests: state.elevenLabsRequests,
-      elevenLabsErrors: state.elevenLabsErrors,
+      sarvamRequests: state.sarvamRequests,
+      sarvamErrors: state.sarvamErrors,
       anthropicRequests: state.anthropicRequests,
       anthropicErrors: state.anthropicErrors,
       geminiSttRequests: state.geminiSttRequests,
@@ -624,14 +632,14 @@ wss.on("connection", async (twilioWs, req) => {
           source: "anthropic",
         });
 
-        const elevenLabsAudio = await synthesizeWithElevenLabs(reply, conversationLanguage).catch((error) => {
-          logEvent({ type: "elevenlabs.error", error: error.message });
+        const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {
+          logEvent({ type: "sarvam.error", error: error.message });
           return null;
         });
-        if (elevenLabsAudio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+        if (sarvamAudio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
           state.twilioAudioPackets += 1;
-          twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: elevenLabsAudio } }));
-          logEvent({ type: "audio.sent", source: "elevenlabs", stream_sid: streamSid });
+          twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
+          logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
         }
       }
     } finally {
@@ -692,7 +700,7 @@ wss.on("connection", async (twilioWs, req) => {
           if (!greeted) {
             greeted = true;
             const greeting = "Hi, I'm your calling assistant. What name should I use for you?";
-            logEvent({ type: "assistant.greeting", session_id: resolvedSession.id, content: greeting, source: "elevenlabs" });
+            logEvent({ type: "assistant.greeting", session_id: resolvedSession.id, content: greeting, source: "sarvam" });
             await sendAudioToTwilio(twilioWs, streamSid, greeting, conversationLanguage);
           }
         }

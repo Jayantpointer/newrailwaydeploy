@@ -37,8 +37,8 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
 const anthropicModel = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-sonnet-4-5";
 const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
-const elevenLabsVoiceId = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
-const elevenLabsApiKey = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
+const sarvamVoiceId = Deno.env.get("SARVAM_VOICE_ID") ?? "";
+const sarvamApiKey = Deno.env.get("SARVAM_API_KEY") ?? "";
 
 const admin = createClient(supabaseUrl, serviceRoleKey, {
   auth: {
@@ -228,9 +228,9 @@ Deno.serve(async (req) => {
         api_key_configured: Boolean(anthropicApiKey),
       },
       voice: {
-        provider: "elevenlabs",
-        voice_id: elevenLabsVoiceId,
-        api_key_configured: Boolean(elevenLabsApiKey),
+        provider: "sarvam",
+        voice_id: sarvamVoiceId,
+        api_key_configured: Boolean(sarvamApiKey),
       },
     },
     { headers: corsHeaders },
