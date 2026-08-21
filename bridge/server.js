@@ -13,7 +13,7 @@ const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const SARVAM_TTS_URL = process.env.SARVAM_TTS_URL || "";
 const SARVAM_API_KEY = process.env.SARVAM_API_KEY || "";
 const SARVAM_VOICE_ID = process.env.SARVAM_VOICE_ID || "";
-const SARVAM_LANGUAGE = process.env.SARVAM_LANGUAGE || "en";
+const SARVAM_LANGUAGE = process.env.SARVAM_LANGUAGE || "auto";
 
 let supabase = null;
 
@@ -58,6 +58,28 @@ function xmlEscape(value) {
     .replaceAll("'", "&apos;");
 }
 
+function detectLanguageMode(text) {
+  const sample = (text || "").trim();
+  if (!sample) return "en";
+
+  const hasHindiScript = /[\u0900-\u097F]/.test(sample);
+  const hasEnglishWords = /\b(the|and|you|call|name|hello|thanks|yes|no|please)\b/i.test(sample);
+  const hasRomanHindi = /\b(ka|ki|ke|hai|haan|nahi|nahi|kya|mera|meri|aap|main|mein|thoda|thodi|abhi|kal|aaj|phone|baad)\b/i.test(sample);
+
+  if (hasHindiScript && hasEnglishWords) return "hinglish";
+  if (hasHindiScript || hasRomanHindi) return "hi";
+  if (hasEnglishWords) return "en";
+  return "en";
+}
+
+function normalizeSarvamLanguage(preferred, text = "") {
+  const envLanguage = (SARVAM_LANGUAGE || "auto").toLowerCase();
+  if (envLanguage !== "auto") return envLanguage;
+
+  const detected = detectLanguageMode(text);
+  return preferred || detected || "en";
+}
+
 function buildFallbackMemoryChunk(transcript) {
   const text = transcript.trim();
   if (!text) return null;
@@ -69,6 +91,7 @@ function buildFallbackMemoryChunk(transcript) {
       content: `Caller introduced themselves as ${nameMatch[1].trim()}`,
       source_text: text,
       tags: ["name"],
+      language: detectLanguageMode(text),
       importance: 90,
       facts: { name: nameMatch[1].trim() },
     };
@@ -83,6 +106,7 @@ function buildFallbackMemoryChunk(transcript) {
     content: text.length > 280 ? `${text.slice(0, 277)}...` : text,
     source_text: text,
     tags: preferenceHints,
+    language: detectLanguageMode(text),
     symptoms: [],
     importance: preferenceHints.length ? 75 : 50,
     facts: {},
@@ -136,7 +160,7 @@ async function extractImportantMemory(transcript) {
   }
 }
 
-async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, fullName, phoneE164, role = "user", memoryChunk = null, summary = "", turns = [] }) {
+async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, fullName, phoneE164, role = "user", memoryChunk = null, summary = "", turns = [], metadata = {} }) {
   if (!CALL_MEMORY_SYNC_URL || !transcript.trim()) return;
   const response = await fetch(CALL_MEMORY_SYNC_URL, {
     method: "POST",
@@ -150,6 +174,7 @@ async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, f
       summary,
       transcript,
       memory_chunk: memoryChunk,
+      metadata,
       turns: turns.length ? turns : [{ role, content: transcript }],
     }),
   });
@@ -160,8 +185,9 @@ async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, f
   }
 }
 
-async function synthesizeWithSarvam(text) {
+async function synthesizeWithSarvam(text, languageHint = "") {
   if (!SARVAM_TTS_URL || !SARVAM_API_KEY || !text.trim()) return null;
+  const language = normalizeSarvamLanguage(languageHint, text);
 
   const response = await fetch(SARVAM_TTS_URL, {
     method: "POST",
@@ -172,7 +198,7 @@ async function synthesizeWithSarvam(text) {
     body: JSON.stringify({
       text,
       voice_id: SARVAM_VOICE_ID,
-      language: SARVAM_LANGUAGE,
+      language,
       format: "mulaw_8000",
     }),
   });
@@ -191,8 +217,8 @@ async function synthesizeWithSarvam(text) {
   return buffer.toString("base64");
 }
 
-async function sendAudioToTwilio(twilioWs, streamSid, text) {
-  const audioBase64 = await synthesizeWithSarvam(text);
+async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
+  const audioBase64 = await synthesizeWithSarvam(text, languageHint);
   if (audioBase64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
     twilioWs.send(JSON.stringify({
       event: "media",
@@ -428,6 +454,7 @@ wss.on("connection", async (twilioWs, req) => {
   let assistantTranscript = "";
   const conversationTurns = [];
   let greeted = false;
+  let conversationLanguage = "en";
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
 
@@ -495,6 +522,7 @@ wss.on("connection", async (twilioWs, req) => {
       if (eventType === "conversation.item.input_audio_transcription.completed") {
         const text = event.transcript || event.text || "";
         userTranscript = `${userTranscript} ${text}`.trim();
+        conversationLanguage = detectLanguageMode(text) || conversationLanguage;
         conversationTurns.push({ role: "user", content: text });
         await recordTurn({
           sessionId: resolvedSession.id,
@@ -502,7 +530,7 @@ wss.on("connection", async (twilioWs, req) => {
           callerId: resolvedSession.caller_id,
           role: "user",
           content: text,
-          metadata: { source: "openai_transcription" },
+          metadata: { source: "openai_transcription", language: conversationLanguage },
         }).catch((error) => console.error("record user turn failed", error));
         await syncChunk(text);
       }
@@ -517,13 +545,14 @@ wss.on("connection", async (twilioWs, req) => {
 
         if (finalText) {
           conversationTurns.push({ role: "assistant", content: finalText });
+          conversationLanguage = detectLanguageMode(finalText) || conversationLanguage;
           await recordTurn({
             sessionId: resolvedSession.id,
             ownerId: resolvedSession.owner_id,
             callerId: resolvedSession.caller_id,
             role: "assistant",
             content: finalText,
-            metadata: { source: "openai_response" },
+            metadata: { source: "openai_response", language: conversationLanguage },
           }).catch((error) => console.error("record assistant turn failed", error));
           await pushTranscriptChunk({
             sessionId: resolvedSession.id,
@@ -534,9 +563,10 @@ wss.on("connection", async (twilioWs, req) => {
             phoneE164,
             role: "assistant",
             turns: [{ role: "assistant", content: finalText }],
+            metadata: { language: conversationLanguage },
           });
 
-          await sendAudioToTwilio(twilioWs, streamSid, finalText).catch((error) => console.error(error));
+          await sendAudioToTwilio(twilioWs, streamSid, finalText, conversationLanguage).catch((error) => console.error(error));
         }
       }
     } catch (error) {
@@ -579,12 +609,13 @@ wss.on("connection", async (twilioWs, req) => {
             callerId: resolvedSession.caller_id,
             role: "assistant",
             content: "Hi, I’m your calling assistant. What name should I use for you?",
-            metadata: { source: "initial_greeting" },
+            metadata: { source: "initial_greeting", language: conversationLanguage },
           }).catch((error) => console.error("record greeting failed", error));
           await sendAudioToTwilio(
             twilioWs,
             streamSid,
             "Hi, I’m your calling assistant. What name should I use for you?",
+            conversationLanguage,
           ).catch((error) => console.error(error));
         }
       }
@@ -614,6 +645,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "assistant",
           summary: extracted?.summary || fullTranscript.slice(0, 500),
           memoryChunk: extracted?.memoryChunk || null,
+          metadata: { language: conversationLanguage },
           turns: [],
         }).catch((error) => console.error(error));
 

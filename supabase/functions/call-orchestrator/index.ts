@@ -21,6 +21,7 @@ type OrchestratorPayload = {
     source_text?: string;
     facts?: Record<string, unknown>;
     tags?: string[];
+    language?: string;
     symptoms?: string[];
     importance?: number;
   };
@@ -67,6 +68,7 @@ async function persistMemoryChunk(params: {
     source_text: chunk?.source_text ?? transcript ?? summary ?? null,
     facts: chunk?.facts ?? {},
     tags: chunk?.tags ?? [],
+    language: chunk?.language ?? "en",
     symptoms: chunk?.symptoms ?? [],
     importance: chunk?.importance ?? 50,
   });
@@ -226,7 +228,7 @@ Deno.serve(async (req) => {
       voice: {
         provider: "sarvam",
         voice_id: settings?.sarvam_voice_id ?? sarvamVoiceId,
-        language: settings?.sarvam_language ?? "en",
+        language: settings?.sarvam_language ?? "auto",
         api_key_configured: Boolean(sarvamApiKey),
       },
     },

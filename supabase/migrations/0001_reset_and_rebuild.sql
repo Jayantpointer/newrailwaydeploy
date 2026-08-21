@@ -17,7 +17,7 @@ create table public.agent_settings (
   system_prompt text not null default 'You are a warm, human-sounding phone assistant. Greet briefly, ask for the caller''s name first, then keep replies short, natural, and proactive. Use OpenAI realtime as the brain and Sarvam for voice.',
   openai_realtime_model text not null default 'gpt-realtime-2.1',
   sarvam_voice_id text not null default '',
-  sarvam_language text not null default 'en',
+  sarvam_language text not null default 'auto',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -28,6 +28,7 @@ create table public.callers (
   full_name text,
   phone_e164 text not null,
   email text,
+  preferred_language text not null default 'en',
   symptoms text[] not null default '{}'::text[],
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
@@ -88,6 +89,7 @@ create table public.memory_chunks (
   source_text text,
   facts jsonb not null default '{}'::jsonb,
   tags text[] not null default '{}'::text[],
+  language text not null default 'en',
   symptoms text[] not null default '{}'::text[],
   importance smallint not null default 50 check (importance between 0 and 100),
   created_at timestamptz not null default now(),

@@ -50,7 +50,21 @@ function detectCallerName(transcript: string) {
   return "";
 }
 
-async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | null, callerId: string | null) {
+function detectLanguageMode(text: string) {
+  const sample = (text || "").trim();
+  if (!sample) return "en";
+
+  const hasHindiScript = /[\u0900-\u097F]/.test(sample);
+  const hasEnglishWords = /\b(the|and|you|call|name|hello|thanks|yes|no|please)\b/i.test(sample);
+  const hasRomanHindi = /\b(ka|ki|ke|hai|haan|nahi|kya|mera|meri|aap|main|mein|thoda|thodi|abhi|kal|aaj|baad)\b/i.test(sample);
+
+  if (hasHindiScript && hasEnglishWords) return "hinglish";
+  if (hasHindiScript || hasRomanHindi) return "hi";
+  if (hasEnglishWords) return "en";
+  return "en";
+}
+
+async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | null, callerId: string | null, language: string) {
   const content = payload.memory_chunk?.content?.trim() || payload.summary?.trim() || payload.transcript?.trim();
   if (!content) return;
 
@@ -63,6 +77,7 @@ async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | nul
     source_text: payload.memory_chunk?.source_text ?? payload.transcript ?? payload.summary ?? null,
     facts: payload.memory_chunk?.facts ?? {},
     tags: payload.memory_chunk?.tags ?? [],
+    language,
     symptoms: payload.memory_chunk?.symptoms ?? [],
     importance: payload.memory_chunk?.importance ?? 50,
   });
@@ -99,6 +114,7 @@ Deno.serve(async (req) => {
 
   const ownerId = body.owner_id ?? session.owner_id ?? null;
   const callerId = body.caller_id ?? session.caller_id ?? null;
+  const language = body.metadata?.language ? String(body.metadata.language) : detectLanguageMode(body.transcript || body.summary || "");
 
   const { error: sessionUpdateError } = await admin
     .from("call_sessions")
@@ -111,12 +127,24 @@ Deno.serve(async (req) => {
       metadata: {
         ...(body.metadata ?? {}),
         transcript_synced_at: new Date().toISOString(),
+        language,
       },
     })
     .eq("id", body.session_id);
 
   if (sessionUpdateError) {
     return Response.json({ error: sessionUpdateError.message }, { status: 400, headers: corsHeaders });
+  }
+
+  if (callerId) {
+    const { error: callerLanguageError } = await admin
+      .from("callers")
+      .update({ preferred_language: language })
+      .eq("id", callerId);
+
+    if (callerLanguageError) {
+      return Response.json({ error: callerLanguageError.message }, { status: 400, headers: corsHeaders });
+    }
   }
 
   const symptomList = Array.isArray(body.memory_chunk?.symptoms) ? body.memory_chunk?.symptoms.filter(Boolean) : [];
@@ -128,7 +156,7 @@ Deno.serve(async (req) => {
       caller_id: callerId,
       role: turn.role,
       content: turn.content,
-      metadata: { source: "transcript_sync" },
+      metadata: { source: "transcript_sync", language },
     }));
 
     const { error: turnsError } = await admin.from("call_turns").insert(rows);
@@ -157,8 +185,9 @@ Deno.serve(async (req) => {
         owner_id: ownerId,
         phone_e164: body.phone_e164,
         full_name: detectedName,
+        preferred_language: language,
         symptoms: [],
-        metadata: { source: "transcript_sync" },
+        metadata: { source: "transcript_sync", language },
       });
 
         if (callerInsertError) {
@@ -168,12 +197,13 @@ Deno.serve(async (req) => {
         const { error: sessionMetadataError } = await admin
           .from("call_sessions")
           .update({
-            metadata: {
-              ...(body.metadata ?? {}),
-              detected_caller_name: detectedName,
-            },
-          })
-          .eq("id", body.session_id);
+          metadata: {
+            ...(body.metadata ?? {}),
+            detected_caller_name: detectedName,
+            language,
+          },
+        })
+        .eq("id", body.session_id);
 
         if (sessionMetadataError) {
           return Response.json({ error: sessionMetadataError.message }, { status: 400, headers: corsHeaders });
@@ -183,7 +213,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    await saveMemoryChunk(body, ownerId, callerId);
+    await saveMemoryChunk(body, ownerId, callerId, language);
   } catch (error) {
     return Response.json({ error: (error as Error).message }, { status: 400, headers: corsHeaders });
   }
@@ -198,7 +228,7 @@ Deno.serve(async (req) => {
     const mergedSymptoms = Array.from(new Set([...(existingCaller?.symptoms ?? []), ...symptomList]));
     const { error: callerSymptomError } = await admin
       .from("callers")
-      .update({ symptoms: mergedSymptoms })
+      .update({ symptoms: mergedSymptoms, preferred_language: language })
       .eq("id", callerId);
 
     if (callerSymptomError) {
@@ -212,5 +242,6 @@ Deno.serve(async (req) => {
     owner_id: ownerId,
     caller_id: callerId,
     detected_name: detectedName || null,
+    language,
   }, { headers: corsHeaders });
 });

@@ -6,7 +6,7 @@ values (
   'You are a warm, human-sounding phone assistant. Greet briefly, ask for the user''s name first, then keep replies short, natural, and proactive. Use OpenAI realtime as the brain and Sarvam for voice.',
   'gpt-realtime-2.1',
   '',
-  'en'
+  'auto'
 )
 on conflict (id) do update set
   agent_name = excluded.agent_name,

@@ -55,5 +55,6 @@ Bridge env vars:
 - `SARVAM_VOICE_ID`
 - `SARVAM_TTS_URL`
 - `CALL_MEMORY_SYNC_URL`
+- `SARVAM_LANGUAGE=auto` for mixed English/Hindi/Hinglish
 
 Run locally with `npm install` then `npm start`.
