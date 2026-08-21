@@ -9,6 +9,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
 const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
+const MEMORY_EXTRACTION_MODEL = envText("MEMORY_EXTRACTION_MODEL", "anthropic/claude-3.5-sonnet");
 const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
 const SARVAM_API_KEY = envText("SARVAM_API_KEY");
 const SARVAM_STT_URL = envText("SARVAM_STT_URL", "wss://api.sarvam.ai/speech-to-text-realtime/ws");
@@ -220,6 +221,7 @@ logEvent({
   sarvam_tts_url: SARVAM_TTS_URL,
   openrouter_api_key_configured: Boolean(OPENROUTER_API_KEY),
   openrouter_model: OPENROUTER_MODEL,
+  memory_extraction_model: MEMORY_EXTRACTION_MODEL,
   sarvam_stt_api_key_configured: Boolean(SARVAM_API_KEY),
   sarvam_stt_url: SARVAM_STT_URL,
   sarvam_stt_model: SARVAM_STT_MODEL,
@@ -330,22 +332,29 @@ function buildFallbackMemoryChunk(transcript) {
   const text = transcript.trim();
   if (!text) return null;
 
-  const nameMatch = text.match(/(?:my name is|i am|i'm|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i);
+  const nameMatch = text.match(/(?:my name is|i am|i'm|call me|this is|i go by)\s+([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})/i);
   if (nameMatch?.[1]) {
+    const name = normalizeCallerName(nameMatch[1].split(/\b(?:and|but|because|with)\b/i)[0].split(/[,.!?]/)[0]);
+    if (!name) return null;
     return {
       chunk_type: "caller_profile",
-      content: `Caller introduced themselves as ${nameMatch[1].trim()}`,
+      content: `Caller introduced themselves as ${name}`,
       source_text: text,
       tags: ["name"],
       language: detectLanguageMode(text),
       importance: 90,
-      facts: { name: nameMatch[1].trim() },
+      facts: { full_name: name },
     };
   }
 
   const preferenceHints = [];
+  const symptomHints = [];
   if (/prefer|like|usually|best/i.test(text)) preferenceHints.push("preference");
   if (/tomorrow|later|next week|follow up|callback/i.test(text)) preferenceHints.push("follow_up");
+  if (/\bleg\b.*\b(hurt|pain|sore|swollen|weak)\b/i.test(text) || /\b(hurt|pain|sore|swollen|weak)\b.*\bleg\b/i.test(text)) symptomHints.push("leg pain");
+  if (/\b(fever|cough|headache|dizzy|dizziness|confusion|fall|falls|breathing trouble|shortness of breath)\b/i.test(text)) {
+    symptomHints.push(...Array.from(new Set((text.match(/\b(fever|cough|headache|dizzy|dizziness|confusion|fall|falls|breathing trouble|shortness of breath)\b/gi) || []).map((item) => item.toLowerCase()))));
+  }
 
   return {
     chunk_type: preferenceHints.includes("follow_up") ? "follow_up" : "call_memory",
@@ -353,9 +362,15 @@ function buildFallbackMemoryChunk(transcript) {
     source_text: text,
     tags: preferenceHints,
     language: detectLanguageMode(text),
-    symptoms: [],
+    symptoms: symptomHints,
     importance: preferenceHints.length ? 75 : 50,
-    facts: {},
+    facts: {
+      current_activity: /\b(reading|watching tv|sleeping|eating|walking|sitting|resting|cooking|taking a bath|on the phone)\b/i.test(text)
+        ? (text.match(/\b(reading|watching tv|sleeping|eating|walking|sitting|resting|cooking|taking a bath|on the phone)\b/i)?.[1] || null)
+        : null,
+      interests: [],
+      full_name: null,
+    },
   };
 }
 
@@ -394,17 +409,34 @@ function memoryChunkLogView(memoryChunk = null) {
     facts: {
       current_activity: typeof facts.current_activity === "string" ? facts.current_activity : typeof facts.activity === "string" ? facts.activity : typeof facts.what_elder_is_doing === "string" ? facts.what_elder_is_doing : null,
       interests: Array.isArray(facts.interests) ? facts.interests : Array.isArray(facts.interest) ? facts.interest : [],
+      full_name: typeof facts.full_name === "string" ? facts.full_name : typeof facts.name === "string" ? facts.name : typeof facts.elder_name === "string" ? facts.elder_name : null,
       keys: Object.keys(facts),
     },
     importance: typeof memoryChunk.importance === "number" ? memoryChunk.importance : null,
   };
 }
 
+function extractJsonPayload(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] || raw).trim();
+
+  const firstBrace = candidate.indexOf("{");
+  const lastBrace = candidate.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return candidate.slice(firstBrace, lastBrace + 1);
+  }
+
+  return candidate;
+}
+
 function extractCallerNameCandidate(text) {
   const sample = normalizeCallerName(text);
   if (!sample) return "";
 
-  const prefixed = sample.match(/(?:my name is|i am|i'm|call me|this is)\s+(.+)/i);
+  const prefixed = sample.match(/(?:my name is|i am|i'm|call me|this is|i go by)\s+(.+)/i);
   if (prefixed?.[1]) {
     const cleaned = normalizeCallerName(prefixed[1].split(/\b(?:and|but|because|with)\b/i)[0].split(/[,.!?]/)[0]);
     if (cleaned && cleaned.split(/\s+/).length <= 3) return cleaned;
@@ -441,15 +473,15 @@ async function extractImportantMemory(transcript) {
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
-        max_tokens: 400,
+        model: MEMORY_EXTRACTION_MODEL,
+        max_tokens: 800,
         temperature: 0,
         messages: [
-            {
-              role: "system",
-              content:
-                "Extract only durable call memory for a family elder app. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. In facts, include current_activity as a short string, interests as an array of short strings, and symptoms as an array of reported symptoms when the caller explicitly mentions them. Exclude secrets, payment details, and private identifiers unless they are needed for follow-up. Keep content short and factual.",
-            },
+          {
+            role: "system",
+            content:
+              "Extract structured elder profile data from this phone transcript. Return strict JSON only, with no markdown and no extra text. Use this schema: {\"full_name\": string|null, \"summary\": string, \"memory_chunk\": {\"chunk_type\": one of [\"caller_profile\",\"follow_up\",\"preference\",\"task\",\"call_memory\"], \"content\": string, \"source_text\": string, \"facts\": {\"current_activity\": string|null, \"interests\": string[], \"symptoms\": string[], \"full_name\": string|null}, \"tags\": string[], \"symptoms\": string[], \"importance\": number } | null }. Capture the person's name if it is stated or clearly implied. Capture reported symptoms like leg pain, weakness, fever, cough, confusion, falls, pain, dizziness, or breathing trouble only if explicitly mentioned. Capture current activity and interests only if the caller says them. Keep summary factual and concise. If nothing important is present, set memory_chunk to null and still return a short summary.",
+          },
           {
             role: "user",
             content: `Transcript:\n${text}`,
@@ -469,17 +501,24 @@ async function extractImportantMemory(transcript) {
     const content = payload?.choices?.[0]?.message?.content?.trim();
     if (!content) return null;
 
-    const parsed = JSON.parse(content);
+    const parsed = JSON.parse(extractJsonPayload(content) || content);
     const memoryChunk = parsed.memory_chunk || null;
     return {
+      full_name: typeof parsed.full_name === "string" ? parsed.full_name.trim() : "",
       summary: typeof parsed.summary === "string" ? parsed.summary : "",
-      memoryChunk: memoryChunk && memoryChunk.content ? { ...memoryChunk, symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [] } : null,
+      memoryChunk: memoryChunk && memoryChunk.content ? {
+        ...memoryChunk,
+        facts: memoryChunk.facts && typeof memoryChunk.facts === "object" ? memoryChunk.facts : {},
+        tags: Array.isArray(memoryChunk.tags) ? memoryChunk.tags : [],
+        symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [],
+      } : null,
     };
   } catch {
     state.openrouterErrors += 1;
     const fallback = buildFallbackMemoryChunk(text);
     return {
       summary: text.slice(0, 500),
+      full_name: extractCallerNameCandidate(text) || "",
       memoryChunk: fallback && fallback.importance >= 75 ? fallback : null,
     };
   }
@@ -1227,12 +1266,12 @@ wss.on("connection", async (twilioWs, req) => {
             ownerId: resolvedSession.owner_id,
             callerId: resolvedSession.caller_id,
             transcript: fullTranscript || userTranscript,
-            fullName,
+            fullName: extracted?.full_name || fullName,
             phoneE164,
             role: "assistant",
             summary: extracted?.summary || fullTranscript.slice(0, 500),
             memoryChunk: extracted?.memoryChunk || null,
-            metadata: { language: conversationLanguage },
+            metadata: { language: conversationLanguage, extracted_full_name: extracted?.full_name || null, memory_extraction_model: MEMORY_EXTRACTION_MODEL },
             turns: [],
           }).catch((error) => console.error(error));
         }

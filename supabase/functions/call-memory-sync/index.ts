@@ -38,8 +38,7 @@ const admin = createClient(supabaseUrl, serviceRoleKey, {
 
 function detectCallerName(transcript: string) {
   const patterns = [
-    /(?:my name is|i am|i'm|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i,
-    /(?:call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/i,
+    /(?:my name is|i am|i'm|this is|call me|i go by)\s+([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})/i,
   ];
 
   for (const pattern of patterns) {
@@ -69,6 +68,7 @@ function normalizeText(value: unknown) {
 }
 
 function normalizeStringArray(value: unknown) {
+  if (typeof value === "string") return value.split(/[,;|]/).map((item) => normalizeText(item)).filter(Boolean);
   if (!Array.isArray(value)) return [] as string[];
   return Array.from(
     new Set(
@@ -84,11 +84,13 @@ function extractProfileFacts(memoryChunk?: MemorySyncPayload["memory_chunk"]) {
   const currentActivity = normalizeText(facts.current_activity ?? facts.activity ?? facts.what_elder_is_doing);
   const interests = normalizeStringArray(facts.interests ?? facts.interest);
   const symptoms = normalizeStringArray(memoryChunk?.symptoms ?? facts.symptoms);
+  const fullName = normalizeText(facts.full_name ?? facts.name ?? facts.elder_name);
 
   return {
     currentActivity,
     interests,
     symptoms,
+    fullName,
   };
 }
 
@@ -148,6 +150,7 @@ async function resolveCallerId(payload: MemorySyncPayload, ownerId: string | nul
 async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | null, callerId: string | null, language: string) {
   const content = payload.memory_chunk?.content?.trim() || payload.summary?.trim();
   if (!content) return;
+  const profileFacts = extractProfileFacts(payload.memory_chunk);
 
   const { error } = await admin.from("memory_chunks").insert({
     owner_id: ownerId,
@@ -159,7 +162,7 @@ async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | nul
     facts: payload.memory_chunk?.facts ?? {},
     tags: payload.memory_chunk?.tags ?? [],
     language,
-    symptoms: payload.memory_chunk?.symptoms ?? [],
+    symptoms: profileFacts.symptoms,
     importance: payload.memory_chunk?.importance ?? 50,
   });
 
@@ -195,10 +198,10 @@ Deno.serve(async (req) => {
 
   const ownerId = body.owner_id ?? session.owner_id ?? null;
   const transcript = body.transcript ?? "";
-  const detectedName = body.full_name ?? detectCallerName(transcript);
-  const language = body.metadata?.language ? String(body.metadata.language) : detectLanguageMode(transcript || body.summary || detectedName);
   const profileFacts = extractProfileFacts(body.memory_chunk);
-  const resolvedCallerId = await resolveCallerId(body, ownerId, detectedName);
+  const detectedName = normalizeText(body.full_name) || profileFacts.fullName || detectCallerName(transcript);
+  const language = body.metadata?.language ? String(body.metadata.language) : detectLanguageMode(transcript || body.summary || detectedName || profileFacts.fullName);
+  const resolvedCallerId = await resolveCallerId(body, ownerId, detectedName || profileFacts.fullName);
 
   const { error: sessionUpdateError } = await admin
     .from("call_sessions")
@@ -240,7 +243,7 @@ Deno.serve(async (req) => {
     const { error: callerUpdateError } = await admin
       .from("callers")
       .update({
-        full_name: detectedName || callerData?.full_name || undefined,
+        full_name: detectedName || profileFacts.fullName || callerData?.full_name || undefined,
         preferred_language: language,
         current_activity: currentActivity || undefined,
         interests: mergedInterests,
