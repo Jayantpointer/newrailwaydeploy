@@ -11,10 +11,11 @@ const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime
 const OPENAI_MEMORY_MODEL = process.env.OPENAI_MEMORY_MODEL || "gpt-4.1-mini";
 const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || "gpt-4.1-mini";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
-const SARVAM_TTS_URL = process.env.SARVAM_TTS_URL || "";
+const SARVAM_TTS_URL = process.env.SARVAM_TTS_URL || "https://api.sarvam.ai/text-to-speech";
 const SARVAM_API_KEY = process.env.SARVAM_API_KEY || "";
 const SARVAM_VOICE_ID = process.env.SARVAM_VOICE_ID || "";
 const SARVAM_LANGUAGE = process.env.SARVAM_LANGUAGE || "auto";
+let sarvamVoiceId = SARVAM_VOICE_ID || "shubh";
 
 let supabase = null;
 
@@ -86,6 +87,11 @@ function normalizeSarvamLanguage(preferred, text = "") {
 
   const detected = detectLanguageMode(text);
   return preferred || detected || "en";
+}
+
+function toSarvamLanguageCode(language) {
+  if (language === "hi" || language === "hinglish") return "hi-IN";
+  return "en-IN";
 }
 
 function buildFallbackMemoryChunk(transcript) {
@@ -228,22 +234,26 @@ async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, f
 async function synthesizeWithSarvam(text, languageHint = "") {
   if (!SARVAM_TTS_URL || !SARVAM_API_KEY || !text.trim()) return null;
   const language = normalizeSarvamLanguage(languageHint, text);
+  const languageCode = toSarvamLanguageCode(language);
+  const speaker = sarvamVoiceId || "shubh";
   state.sarvamRequests += 1;
 
   let response;
   try {
     response = await fetch(SARVAM_TTS_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${SARVAM_API_KEY}`,
-    },
-    body: JSON.stringify({
-      text,
-      voice_id: SARVAM_VOICE_ID,
-      language,
-      format: "mulaw_8000",
-    }),
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-subscription-key": SARVAM_API_KEY,
+      },
+      body: JSON.stringify({
+        text,
+        model: "bulbul:v3",
+        language_code: languageCode,
+        speaker,
+        output_audio_codec: "mulaw",
+        speech_sample_rate: 8000,
+      }),
     });
   } catch (error) {
     state.sarvamErrors += 1;
@@ -253,18 +263,13 @@ async function synthesizeWithSarvam(text, languageHint = "") {
 
   if (!response.ok) {
     state.sarvamErrors += 1;
-    logEvent({ type: "sarvam.error", status: response.status, statusText: response.statusText });
+    const details = await response.text().catch(() => "");
+    logEvent({ type: "sarvam.error", status: response.status, statusText: response.statusText, details });
     return null;
   }
 
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    const data = await response.json();
-    return data.audio_base64 || data.audio || null;
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  return buffer.toString("base64");
+  const data = await response.json();
+  return Array.isArray(data?.audios) ? data.audios[0] || null : null;
 }
 
 async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
@@ -312,6 +317,9 @@ async function loadAgentSettings() {
     .maybeSingle();
 
   if (error) throw error;
+  if (data?.sarvam_voice_id) {
+    sarvamVoiceId = String(data.sarvam_voice_id).toLowerCase();
+  }
   return data || {};
 }
 
