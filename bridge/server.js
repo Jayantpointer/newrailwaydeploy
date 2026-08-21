@@ -490,7 +490,7 @@ async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
-  if (req.method === "GET" && url.pathname === "/health") {
+  if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/health" || url.pathname === "/healthz")) {
     return json(res, 200, {
       ok: true,
       activeConnections: state.activeConnections,
@@ -538,6 +538,21 @@ const server = http.createServer((req, res) => {
   }
 
   json(res, 404, { error: "Not found" });
+});
+
+server.on("error", (error) => {
+  state.lastError = error.message;
+  console.error("server error", error);
+});
+
+process.on("SIGTERM", () => {
+  console.log("Bridge received SIGTERM");
+  server.close(() => process.exit(0));
+});
+
+process.on("SIGINT", () => {
+  console.log("Bridge received SIGINT");
+  server.close(() => process.exit(0));
 });
 
 const wss = new WebSocket.Server({ noServer: true });
