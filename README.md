@@ -6,7 +6,7 @@ Current pieces:
 - Memory chunks stored in `memory_chunks`
 - Transcript sync writes turns, caller name, and memory into Supabase
 - Edge function scaffold for call orchestration
-- OpenAI realtime configured as the brain default
+- Gemini 2.5 Flash configured as the brain default
 - ElevenLabs used for voice output
 - Twilio outbound call starter and voice webhook scaffold
 - Railway bridge server for Twilio media streams
@@ -51,6 +51,8 @@ Bridge env vars:
 - `OPENAI_API_KEY`
 - `OPENAI_REALTIME_MODEL=gpt-realtime-2.1`
 - `OPENAI_MEMORY_MODEL=gpt-4.1-mini`
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL=gemini-2.5-flash`
 - `ELEVENLABS_API_KEY`
 - `ELEVENLABS_VOICE_ID`
 - `ELEVENLABS_MODEL_ID=eleven_multilingual_v2`

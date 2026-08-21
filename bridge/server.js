@@ -11,6 +11,8 @@ const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime
 const OPENAI_MEMORY_MODEL = process.env.OPENAI_MEMORY_MODEL || "gpt-4.1-mini";
 const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || "gpt-4.1-mini";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
+const GEMINI_API_KEY = envText("GEMINI_API_KEY");
+const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
@@ -46,6 +48,8 @@ const state = {
   twilioAudioPackets: 0,
   elevenLabsRequests: 0,
   elevenLabsErrors: 0,
+  geminiRequests: 0,
+  geminiErrors: 0,
 };
 
 function json(res, statusCode, data) {
@@ -66,6 +70,8 @@ logEvent({
   elevenlabs_api_key_configured: Boolean(ELEVENLABS_API_KEY),
   elevenlabs_voice_id_configured: Boolean(ELEVENLABS_VOICE_ID),
   elevenlabs_model_id: ELEVENLABS_MODEL_ID,
+  gemini_api_key_configured: Boolean(GEMINI_API_KEY),
+  gemini_model: GEMINI_MODEL,
 });
 
 function xmlEscape(value) {
@@ -126,34 +132,38 @@ function buildFallbackMemoryChunk(transcript) {
 
 async function extractImportantMemory(transcript) {
   const text = transcript.trim();
-  if (!text || !OPENAI_API_KEY) return null;
+  if (!text) return null;
+
+  if (!GEMINI_API_KEY) return null;
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    state.geminiRequests += 1;
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: OPENAI_MEMORY_MODEL,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "Extract only durable, non-sensitive call memory. Return JSON with summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
-          },
+        systemInstruction: {
+          parts: [{ text: "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual." }],
+        },
+        contents: [
           {
             role: "user",
-            content: `Transcript:\n${text}`,
+            parts: [{ text: `Transcript:\n${text}` }],
           },
         ],
+        generationConfig: { responseMimeType: "application/json" },
       }),
     });
 
+    if (!response.ok) {
+      state.geminiErrors += 1;
+      return null;
+    }
+
     const payload = await response.json();
-    const content = payload?.choices?.[0]?.message?.content;
+    const content = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("");
     if (!content) return null;
 
     const parsed = JSON.parse(content);
@@ -163,6 +173,7 @@ async function extractImportantMemory(transcript) {
       memoryChunk: memoryChunk && memoryChunk.content ? { ...memoryChunk, symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [] } : null,
     };
   } catch {
+    state.geminiErrors += 1;
     const fallback = buildFallbackMemoryChunk(text);
     return {
       summary: text.slice(0, 500),
@@ -173,32 +184,32 @@ async function extractImportantMemory(transcript) {
 
 async function generateFallbackReply(turns, language) {
   const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
-  if (!OPENAI_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
+  if (!GEMINI_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    state.geminiRequests += 1;
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: OPENAI_FALLBACK_MODEL,
-        temperature: 0.3,
-        messages: [
-          {
-            role: "system",
-            content: `You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
-          },
-          ...turns.map((turn) => ({ role: turn.role, content: turn.content })),
-        ],
+        systemInstruction: {
+          parts: [{ text: `You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.` }],
+        },
+        contents: turns.map((turn) => ({ role: turn.role === "assistant" ? "model" : "user", parts: [{ text: turn.content }] })),
       }),
     });
 
-    if (!response.ok) return "Sorry, I didn’t catch that. What name should I use for you?";
+    if (!response.ok) {
+      state.geminiErrors += 1;
+      return "Sorry, I didn’t catch that. What name should I use for you?";
+    }
+
     const payload = await response.json();
-    return payload?.choices?.[0]?.message?.content?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
+    return payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim() || "Sorry, I didn’t catch that. What name should I use for you?";
   } catch {
+    state.geminiErrors += 1;
     return "Sorry, I didn’t catch that. What name should I use for you?";
   }
 }
@@ -408,6 +419,8 @@ const server = http.createServer((req, res) => {
       twilioAudioPackets: state.twilioAudioPackets,
       elevenLabsRequests: state.elevenLabsRequests,
       elevenLabsErrors: state.elevenLabsErrors,
+      geminiRequests: state.geminiRequests,
+      geminiErrors: state.geminiErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -554,33 +567,27 @@ wss.on("connection", async (twilioWs, req) => {
           clearTimeout(assistantFallbackTimer);
         }
 
-        assistantFallbackTimer = setTimeout(async () => {
-          if (assistantReplied) return;
-          const reply = await generateFallbackReply(conversationTurns, conversationLanguage);
-          conversationTurns.push({ role: "assistant", content: reply });
-          logEvent({
-            type: "conversation.line",
-            session_id: resolvedSession.id,
-            role: "assistant",
-            content: reply,
-            language: conversationLanguage,
-            source: "fallback",
-          });
-          const elevenLabsAudio = await synthesizeWithElevenLabs(reply, conversationLanguage).catch((error) => {
-            logEvent({ type: "elevenlabs.error", error: error.message });
-            return null;
-          });
-          if (elevenLabsAudio) {
-            assistantReplied = true;
-            state.twilioAudioPackets += 1;
-            twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: elevenLabsAudio } }));
-            logEvent({ type: "audio.sent", source: "elevenlabs", stream_sid: streamSid });
-          }
-        }, 3500);
+        const reply = await generateFallbackReply(conversationTurns, conversationLanguage);
+        conversationTurns.push({ role: "assistant", content: reply });
+        conversationLanguage = detectLanguageMode(reply) || conversationLanguage;
+        logEvent({
+          type: "conversation.line",
+          session_id: resolvedSession.id,
+          role: "assistant",
+          content: reply,
+          language: conversationLanguage,
+          source: "gemini",
+        });
 
-        if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-          logEvent({ type: "openai.response.requested", session_id: resolvedSession.id });
-          openaiWs.send(JSON.stringify({ type: "response.create" }));
+        const elevenLabsAudio = await synthesizeWithElevenLabs(reply, conversationLanguage).catch((error) => {
+          logEvent({ type: "elevenlabs.error", error: error.message });
+          return null;
+        });
+        if (elevenLabsAudio) {
+          assistantReplied = true;
+          state.twilioAudioPackets += 1;
+          twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: elevenLabsAudio } }));
+          logEvent({ type: "audio.sent", source: "elevenlabs", stream_sid: streamSid });
         }
       }
 
