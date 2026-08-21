@@ -7,8 +7,9 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
-const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
-const ANTHROPIC_MODEL = envText("ANTHROPIC_MODEL", "claude-sonnet-4-5");
+const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
+const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
+const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
 const GEMINI_API_KEY = envText("GEMINI_API_KEY");
 const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
 const SARVAM_API_KEY = envText("SARVAM_API_KEY");
@@ -47,8 +48,8 @@ const state = {
   twilioAudioPackets: 0,
   sarvamRequests: 0,
   sarvamErrors: 0,
-  anthropicRequests: 0,
-  anthropicErrors: 0,
+  openrouterRequests: 0,
+  openrouterErrors: 0,
   geminiSttRequests: 0,
   geminiSttErrors: 0,
 };
@@ -71,8 +72,8 @@ logEvent({
   sarvam_api_key_configured: Boolean(SARVAM_API_KEY),
   sarvam_voice_id_configured: Boolean(SARVAM_VOICE_ID),
   sarvam_tts_url: SARVAM_TTS_URL,
-  anthropic_api_key_configured: Boolean(ANTHROPIC_API_KEY),
-  anthropic_model: ANTHROPIC_MODEL,
+  openrouter_api_key_configured: Boolean(OPENROUTER_API_KEY),
+  openrouter_model: OPENROUTER_MODEL,
   gemini_stt_api_key_configured: Boolean(GEMINI_API_KEY),
   gemini_stt_model: GEMINI_MODEL,
 });
@@ -204,23 +205,26 @@ async function extractImportantMemory(transcript) {
   const text = transcript.trim();
   if (!text) return null;
 
-  if (!ANTHROPIC_API_KEY) return null;
+  if (!OPENROUTER_API_KEY) return null;
 
   try {
-    state.anthropicRequests += 1;
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    state.openrouterRequests += 1;
+    const response = await fetch(`${OPENROUTER_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
       },
       body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
+        model: OPENROUTER_MODEL,
         max_tokens: 400,
-        system:
-          "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
+        temperature: 0,
         messages: [
+          {
+            role: "system",
+            content:
+              "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
+          },
           {
             role: "user",
             content: `Transcript:\n${text}`,
@@ -231,13 +235,13 @@ async function extractImportantMemory(transcript) {
 
     if (!response.ok) {
       const details = await response.text().catch(() => "");
-      state.anthropicErrors += 1;
-      logEvent({ type: "anthropic.error", status: response.status, statusText: response.statusText, details });
+      state.openrouterErrors += 1;
+      logEvent({ type: "openrouter.error", status: response.status, statusText: response.statusText, details });
       return null;
     }
 
     const payload = await response.json();
-    const content = payload?.content?.find((block) => block?.type === "text")?.text?.trim();
+    const content = payload?.choices?.[0]?.message?.content?.trim();
     if (!content) return null;
 
     const parsed = JSON.parse(content);
@@ -247,7 +251,7 @@ async function extractImportantMemory(transcript) {
       memoryChunk: memoryChunk && memoryChunk.content ? { ...memoryChunk, symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [] } : null,
     };
   } catch {
-    state.anthropicErrors += 1;
+    state.openrouterErrors += 1;
     const fallback = buildFallbackMemoryChunk(text);
     return {
       summary: text.slice(0, 500),
@@ -297,36 +301,41 @@ async function transcribeAudioWithGemini(audioWavBase64, language) {
 
 async function generateFallbackReply(turns, language, systemPrompt = "") {
   const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
-  if (!ANTHROPIC_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
+  if (!OPENROUTER_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
 
   try {
-    state.anthropicRequests += 1;
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    state.openrouterRequests += 1;
+    const response = await fetch(`${OPENROUTER_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
       },
       body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
+        model: OPENROUTER_MODEL,
         max_tokens: 300,
-        system: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
-        messages: [{ role: "user", content: `Conversation:\n${text}` }],
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
+          },
+          { role: "user", content: `Conversation:\n${text}` },
+        ],
       }),
     });
 
     if (!response.ok) {
       const details = await response.text().catch(() => "");
-      state.anthropicErrors += 1;
-      logEvent({ type: "anthropic.error", status: response.status, statusText: response.statusText, details });
+      state.openrouterErrors += 1;
+      logEvent({ type: "openrouter.error", status: response.status, statusText: response.statusText, details });
       return "Sorry, I didn’t catch that. What name should I use for you?";
     }
 
     const payload = await response.json();
-    return payload?.content?.find((block) => block?.type === "text")?.text?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
+    return payload?.choices?.[0]?.message?.content?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
   } catch {
-    state.anthropicErrors += 1;
+    state.openrouterErrors += 1;
     return "Sorry, I didn’t catch that. What name should I use for you?";
   }
 }
@@ -504,8 +513,8 @@ const server = http.createServer((req, res) => {
       twilioAudioPackets: state.twilioAudioPackets,
       sarvamRequests: state.sarvamRequests,
       sarvamErrors: state.sarvamErrors,
-      anthropicRequests: state.anthropicRequests,
-      anthropicErrors: state.anthropicErrors,
+      openrouterRequests: state.openrouterRequests,
+      openrouterErrors: state.openrouterErrors,
       geminiSttRequests: state.geminiSttRequests,
       geminiSttErrors: state.geminiSttErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
@@ -632,7 +641,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "user",
           content: transcript,
           language: conversationLanguage,
-          source: "anthropic",
+          source: "openrouter",
         });
 
         const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
@@ -644,7 +653,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "assistant",
           content: reply,
           language: conversationLanguage,
-          source: "anthropic",
+          source: "openrouter",
         });
 
         const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {

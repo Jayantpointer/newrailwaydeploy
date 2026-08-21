@@ -6,7 +6,7 @@ Current pieces:
 - Memory chunks stored in `memory_chunks`
 - Transcript sync writes turns, caller name, and memory into Supabase
 - Edge function scaffold for call orchestration
-- Gemini 2.5 Flash configured as the brain default
+- OpenRouter Meta Llama 3.3 70B Instruct configured as the brain default
 - ElevenLabs used for voice output
 - Twilio outbound call starter and voice webhook scaffold
 - Railway bridge server for Twilio media streams
@@ -48,8 +48,9 @@ Notes:
 
 Bridge env vars:
 
-- `ANTHROPIC_API_KEY`
-- `ANTHROPIC_MODEL=claude-sonnet-4-5`
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct`
+- `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
 - `GEMINI_API_KEY` for STT only
 - `GEMINI_MODEL=gemini-2.5-flash`
 - `SARVAM_API_KEY`
