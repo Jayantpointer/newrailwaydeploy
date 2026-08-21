@@ -10,17 +10,17 @@ const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
 const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
 const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
-const GROQ_API_KEY = envText("GROQ_API_KEY");
-const GROQ_STT_MODEL = envText("GROQ_STT_MODEL", "whisper-large-v3-turbo");
 const SARVAM_API_KEY = envText("SARVAM_API_KEY");
+const SARVAM_STT_URL = envText("SARVAM_STT_URL", "wss://api.sarvam.ai/speech-to-text-realtime/ws");
+const SARVAM_STT_MODEL = envText("SARVAM_STT_MODEL", "saaras:v3-realtime");
+const SARVAM_STT_LANGUAGE = envText("SARVAM_STT_LANGUAGE", "auto");
+const SARVAM_STT_MODE = envText("SARVAM_STT_MODE", "codemix");
 const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID", "shubh");
 const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech");
 const SARVAM_LANGUAGE = envText("SARVAM_LANGUAGE", "auto");
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
-
-const TURN_SILENCE_MS = 1000;
 
 const HUMAN_CALLING_SYSTEM_PROMPT = `
 You are speaking with someone on a phone call. Your words will be spoken aloud, not read. Write for the ear and for the clock.
@@ -191,8 +191,10 @@ const state = {
   sarvamErrors: 0,
   openrouterRequests: 0,
   openrouterErrors: 0,
-  groqSttRequests: 0,
-  groqSttErrors: 0,
+  sarvamSttConnections: 0,
+  sarvamSttErrors: 0,
+  sarvamSttPartials: 0,
+  sarvamSttFinals: 0,
 };
 
 function json(res, statusCode, data) {
@@ -215,71 +217,12 @@ logEvent({
   sarvam_tts_url: SARVAM_TTS_URL,
   openrouter_api_key_configured: Boolean(OPENROUTER_API_KEY),
   openrouter_model: OPENROUTER_MODEL,
-  groq_stt_api_key_configured: Boolean(GROQ_API_KEY),
-  groq_stt_model: GROQ_STT_MODEL,
+  sarvam_stt_api_key_configured: Boolean(SARVAM_API_KEY),
+  sarvam_stt_url: SARVAM_STT_URL,
+  sarvam_stt_model: SARVAM_STT_MODEL,
+  sarvam_stt_language: SARVAM_STT_LANGUAGE,
+  sarvam_stt_mode: SARVAM_STT_MODE,
 });
-
-const MULAW_BIAS = 0x84;
-
-function muLawByteToPcmSample(muLawByte) {
-  const u = (~muLawByte) & 0xff;
-  const sign = u & 0x80;
-  const exponent = (u >> 4) & 0x07;
-  const mantissa = u & 0x0f;
-  let sample = ((mantissa << 3) + MULAW_BIAS) << exponent;
-  sample -= MULAW_BIAS;
-  return sign ? -sample : sample;
-}
-
-function twilioMulawToWavBase64(payloads) {
-  const pcmSamples = [];
-
-  for (const payload of payloads) {
-    const mulaw = Buffer.from(payload, "base64");
-    for (const byte of mulaw) {
-      pcmSamples.push(muLawByteToPcmSample(byte));
-    }
-  }
-
-  const pcmBuffer = Buffer.alloc(pcmSamples.length * 2);
-  for (let i = 0; i < pcmSamples.length; i += 1) {
-    pcmBuffer.writeInt16LE(Math.max(-32768, Math.min(32767, pcmSamples[i])), i * 2);
-  }
-
-  const sampleRate = 8000;
-  const byteRate = sampleRate * 2;
-  const blockAlign = 2;
-  const dataSize = pcmBuffer.length;
-  const wav = Buffer.alloc(44 + dataSize);
-
-  wav.write("RIFF", 0);
-  wav.writeUInt32LE(36 + dataSize, 4);
-  wav.write("WAVE", 8);
-  wav.write("fmt ", 12);
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(1, 22);
-  wav.writeUInt32LE(sampleRate, 24);
-  wav.writeUInt32LE(byteRate, 28);
-  wav.writeUInt16LE(blockAlign, 32);
-  wav.writeUInt16LE(16, 34);
-  wav.write("data", 36);
-  wav.writeUInt32LE(dataSize, 40);
-  pcmBuffer.copy(wav, 44);
-
-  return wav.toString("base64");
-}
-
-function computePacketEnergy(payload) {
-  const mulaw = Buffer.from(payload, "base64");
-  if (!mulaw.length) return 0;
-
-  let total = 0;
-  for (const byte of mulaw) {
-    total += Math.abs(muLawByteToPcmSample(byte));
-  }
-  return total / mulaw.length;
-}
 
 function sarvamLanguageCode(language) {
   const languageCodes = {
@@ -480,49 +423,6 @@ async function extractImportantMemory(transcript) {
       summary: text.slice(0, 500),
       memoryChunk: fallback && fallback.importance >= 75 ? fallback : null,
     };
-  }
-}
-
-async function transcribeAudioWithGroq(audioWavBase64, language) {
-  if (!GROQ_API_KEY || !audioWavBase64) return { text: "", language: "" };
-
-  try {
-    state.groqSttRequests += 1;
-    const audioBuffer = Buffer.from(audioWavBase64, "base64");
-    const formData = new FormData();
-    formData.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
-    formData.append("model", GROQ_STT_MODEL);
-    formData.append("response_format", "verbose_json");
-    formData.append("temperature", "0");
-    const requestedLanguage = languageModeFromCode(language);
-    if (requestedLanguage && requestedLanguage !== "hinglish") {
-      formData.append("language", requestedLanguage);
-    } else if (requestedLanguage === "hinglish") {
-      formData.append("language", "hi");
-    }
-
-    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
-      body: formData,
-    });
-
-    if (!response.ok) {
-      state.groqSttErrors += 1;
-      const details = await response.text().catch(() => "");
-      logEvent({ type: "groq.error", status: response.status, statusText: response.statusText, details, stage: "transcribe" });
-      return { text: "", language: "" };
-    }
-
-    const payload = await response.json();
-    return {
-      text: typeof payload?.text === "string" ? payload.text.trim() : "",
-      language: languageModeFromCode(payload?.language),
-    };
-  } catch (error) {
-    state.groqSttErrors += 1;
-    logEvent({ type: "groq.error", error: error.message, stage: "transcribe" });
-    return { text: "", language: "" };
   }
 }
 
@@ -745,8 +645,10 @@ const server = http.createServer((req, res) => {
       sarvamErrors: state.sarvamErrors,
       openrouterRequests: state.openrouterRequests,
       openrouterErrors: state.openrouterErrors,
-      groqSttRequests: state.groqSttRequests,
-      groqSttErrors: state.groqSttErrors,
+      sarvamSttConnections: state.sarvamSttConnections,
+      sarvamSttErrors: state.sarvamSttErrors,
+      sarvamSttPartials: state.sarvamSttPartials,
+      sarvamSttFinals: state.sarvamSttFinals,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -825,10 +727,13 @@ wss.on("connection", async (twilioWs, req) => {
   let conversationLanguage = "auto";
   let twilioReady = false;
   const pendingTwilioMessages = [];
-  const bufferedSpeechPackets = [];
-  let turnTimer = null;
+  let sarvamSttWs = null;
+  let sarvamSttConnectPromise = null;
+  let sarvamSttEndResolve = null;
+  const pendingSarvamAudio = [];
+  const pendingTranscripts = [];
   let turnProcessing = false;
-  let turnQueued = false;
+  let callStopping = false;
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
 
@@ -836,85 +741,209 @@ wss.on("connection", async (twilioWs, req) => {
     if (!twilioReady) pendingTwilioMessages.push(raw);
   });
 
-  function scheduleTurnFlush() {
-    if (turnTimer) clearTimeout(turnTimer);
-    turnTimer = setTimeout(() => {
-      turnTimer = null;
-      void processBufferedTurn();
-    }, TURN_SILENCE_MS);
+  function sarvamSttSocketUrl() {
+    const sttUrl = new URL(SARVAM_STT_URL);
+    sttUrl.searchParams.set("model", SARVAM_STT_MODEL);
+    sttUrl.searchParams.set("language_code", SARVAM_STT_LANGUAGE || "auto");
+    sttUrl.searchParams.set("stream_type", "fast");
+    sttUrl.searchParams.set("mode", SARVAM_STT_MODE);
+    sttUrl.searchParams.set("endpointing", "vad");
+    sttUrl.searchParams.set("encoding", "mulaw");
+    sttUrl.searchParams.set("sample_rate", "8000");
+    sttUrl.searchParams.set("threshold", "0.3");
+    sttUrl.searchParams.set("silence_duration_ms", "500");
+    sttUrl.searchParams.set("min_speech_duration_ms", "250");
+    return sttUrl.toString();
   }
 
-  async function processBufferedTurn() {
-    if (turnProcessing) {
-      turnQueued = true;
-      return;
-    }
+  function resolveSarvamSttEnd() {
+    if (!sarvamSttEndResolve) return;
+    const resolve = sarvamSttEndResolve;
+    sarvamSttEndResolve = null;
+    resolve();
+  }
 
-    const packets = bufferedSpeechPackets.splice(0);
-    if (!packets.length) {
-      turnQueued = false;
-      return;
-    }
-
-    turnProcessing = true;
-    turnQueued = false;
-
+  function handleSarvamSttMessage(raw) {
+    let message;
     try {
-      const transcription = await transcribeAudioWithGroq(twilioMulawToWavBase64(packets), conversationLanguage);
-      const transcript = transcription.text;
-      if (transcript) {
-        userTranscript = `${userTranscript} ${transcript}`.trim();
-        conversationLanguage = detectLanguageMode(transcript, transcription.language || conversationLanguage);
-        conversationTurns.push({ role: "user", content: transcript });
-        logEvent({
-          type: "conversation.line",
-          session_id: resolvedSession.id,
-          role: "user",
-          content: transcript,
-          language: conversationLanguage,
-          source: "openrouter",
-        });
+      message = JSON.parse(raw.toString());
+    } catch (error) {
+      state.sarvamSttErrors += 1;
+      logEvent({ type: "sarvam.stt.error", error: error.message, stage: "parse" });
+      return;
+    }
 
-        const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
-        conversationTurns.push({ role: "assistant", content: reply });
-        logEvent({
-          type: "conversation.line",
-          session_id: resolvedSession.id,
-          role: "assistant",
-          content: reply,
-          language: conversationLanguage,
-          source: "openrouter",
-        });
+    const event = message?.event || message?.type;
+    if (event === "transcript.partial") {
+      state.sarvamSttPartials += 1;
+      return;
+    }
 
-        const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {
-          logEvent({ type: "sarvam.error", error: error.message });
-          return null;
-        });
-        if (sarvamAudio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-          state.twilioAudioPackets += 1;
-          twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
-          logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
+    if (event === "vad.speech_start") {
+      if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
+        twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+      }
+      return;
+    }
+
+    if (event === "transcript.final") {
+      const transcript = String(message.text || message.transcript || message.data?.text || message.data?.transcript || "").trim();
+      if (!transcript) return;
+
+      state.sarvamSttFinals += 1;
+      const detectedLanguage = languageModeFromCode(message.language || message.language_code || message.data?.language || message.data?.language_code);
+      pendingTranscripts.push({ transcript, detectedLanguage });
+      void drainTranscriptQueue();
+      return;
+    }
+
+    if (event === "session.end") {
+      resolveSarvamSttEnd();
+      return;
+    }
+
+    if (event === "error") {
+      state.sarvamSttErrors += 1;
+      logEvent({
+        type: "sarvam.stt.error",
+        code: message.code,
+        fatal: Boolean(message.is_fatal),
+        details: message.message || message.error,
+      });
+    }
+  }
+
+  async function connectSarvamStt() {
+    if (!SARVAM_API_KEY) {
+      state.lastError = "Missing SARVAM_API_KEY";
+      logEvent({ type: "config.error", session_id: resolvedSession.id, message: state.lastError, stage: "sarvam_stt" });
+      return false;
+    }
+
+    if (sarvamSttWs?.readyState === WebSocket.OPEN) return true;
+    if (sarvamSttConnectPromise) return sarvamSttConnectPromise;
+
+    sarvamSttConnectPromise = new Promise((resolve) => {
+      let settled = false;
+      const sttWs = new WebSocket(sarvamSttSocketUrl(), {
+        headers: { "api-subscription-key": SARVAM_API_KEY },
+      });
+      sarvamSttWs = sttWs;
+
+      sttWs.on("open", () => {
+        if (settled) return;
+        settled = true;
+        state.sarvamSttConnections += 1;
+        logEvent({ type: "sarvam.stt.connected", session_id: resolvedSession.id, model: SARVAM_STT_MODEL });
+        while (pendingSarvamAudio.length && sttWs.readyState === WebSocket.OPEN) {
+          sttWs.send(JSON.stringify({ event: "audio_input", audio: pendingSarvamAudio.shift() }));
         }
+        resolve(true);
+      });
+
+      sttWs.on("message", handleSarvamSttMessage);
+
+      sttWs.on("error", (error) => {
+        state.sarvamSttErrors += 1;
+        logEvent({ type: "sarvam.stt.error", error: error.message, stage: "socket" });
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      });
+
+      sttWs.on("close", (code, reason) => {
+        if (sarvamSttWs === sttWs) sarvamSttWs = null;
+        resolveSarvamSttEnd();
+        logEvent({ type: "sarvam.stt.closed", session_id: resolvedSession.id, code, reason: reason.toString() });
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      });
+    }).finally(() => {
+      sarvamSttConnectPromise = null;
+    });
+
+    return sarvamSttConnectPromise;
+  }
+
+  function forwardAudioToSarvam(payload) {
+    if (!payload || callStopping) return;
+    if (sarvamSttWs?.readyState === WebSocket.OPEN) {
+      sarvamSttWs.send(JSON.stringify({ event: "audio_input", audio: payload }));
+      return;
+    }
+
+    if (pendingSarvamAudio.length < 250) pendingSarvamAudio.push(payload);
+    void connectSarvamStt();
+  }
+
+  async function processTranscript({ transcript, detectedLanguage }) {
+    userTranscript = `${userTranscript} ${transcript}`.trim();
+    conversationLanguage = detectLanguageMode(transcript, detectedLanguage || conversationLanguage);
+    conversationTurns.push({ role: "user", content: transcript });
+    logEvent({
+      type: "conversation.line",
+      session_id: resolvedSession.id,
+      role: "user",
+      content: transcript,
+      language: conversationLanguage,
+      source: "sarvam_stt",
+    });
+
+    const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
+    conversationTurns.push({ role: "assistant", content: reply });
+    logEvent({
+      type: "conversation.line",
+      session_id: resolvedSession.id,
+      role: "assistant",
+      content: reply,
+      language: conversationLanguage,
+      source: "openrouter",
+    });
+
+    const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {
+      logEvent({ type: "sarvam.error", error: error.message });
+      return null;
+    });
+    if (sarvamAudio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+      state.twilioAudioPackets += 1;
+      twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
+      logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
+    }
+  }
+
+  async function drainTranscriptQueue() {
+    if (turnProcessing) return;
+    turnProcessing = true;
+    try {
+      while (pendingTranscripts.length) {
+        await processTranscript(pendingTranscripts.shift());
       }
     } finally {
       turnProcessing = false;
-      if (turnQueued || bufferedSpeechPackets.length) {
-        turnQueued = false;
-        scheduleTurnFlush();
-      }
     }
   }
 
-  async function drainTurns() {
-    if (turnTimer) {
-      clearTimeout(turnTimer);
-      turnTimer = null;
+  async function waitForTranscriptQueue() {
+    while (turnProcessing || pendingTranscripts.length) {
+      if (!turnProcessing) void drainTranscriptQueue();
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
+  }
 
-    await processBufferedTurn();
-    while (turnProcessing || bufferedSpeechPackets.length) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+  async function stopSarvamStt() {
+    const sttWs = sarvamSttWs;
+    if (!sttWs || sttWs.readyState !== WebSocket.OPEN) return;
+
+    const endPromise = new Promise((resolve) => {
+      sarvamSttEndResolve = resolve;
+      setTimeout(resolve, 1500);
+    });
+    sttWs.send(JSON.stringify({ event: "end" }));
+    await endPromise;
+    if (sttWs.readyState === WebSocket.OPEN) sttWs.close(1000, "call ended");
   }
 
   twilioWs.on("message", (raw) => {
@@ -948,6 +977,7 @@ wss.on("connection", async (twilioWs, req) => {
             })
             .eq("id", resolvedSession.id);
 
+          await connectSarvamStt();
           const settings = await loadAgentSettings();
           systemPrompt = settings.system_prompt || "You are a warm, human-sounding phone assistant. Keep replies short and neutral. Never imply the call is over or that the caller declined. Ask one simple question at a time.";
 
@@ -964,16 +994,14 @@ wss.on("connection", async (twilioWs, req) => {
             logEvent({ type: "twilio.media", session_id: resolvedSession.id });
           }
 
-          const energy = computePacketEnergy(message.media.payload);
-          if (energy > 160) {
-            bufferedSpeechPackets.push(message.media.payload);
-            scheduleTurnFlush();
-          }
+          forwardAudioToSarvam(message.media?.payload);
         }
 
         if (message.event === "stop") {
           logEvent({ type: "twilio.stop", session_id: resolvedSession.id });
-          await drainTurns();
+          callStopping = true;
+          await stopSarvamStt();
+          await waitForTranscriptQueue();
           const client = getSupabase();
           if (client && resolvedSession.id) {
             await client
@@ -1019,6 +1047,8 @@ wss.on("connection", async (twilioWs, req) => {
   }
 
   twilioWs.on("close", () => {
+    callStopping = true;
+    if (sarvamSttWs?.readyState === WebSocket.OPEN) sarvamSttWs.close(1000, "Twilio stream closed");
     state.activeConnections = Math.max(0, state.activeConnections - 1);
     logEvent({ type: "ws.close", session_id: resolvedSession.id });
   });

@@ -7,7 +7,7 @@ Current pieces:
 - Transcript sync writes turns, caller name, and memory into Supabase
 - Edge function scaffold for call orchestration
 - OpenRouter Meta Llama 3.3 70B Instruct configured as the brain default
-- Groq Whisper configured for STT
+- Sarvam Saaras v3 realtime configured for STT
 - ElevenLabs used for voice output
 - Twilio outbound call starter and voice webhook scaffold
 - Railway bridge server for Twilio media streams
@@ -54,15 +54,17 @@ Bridge env vars:
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct`
 - `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `GROQ_API_KEY` for STT
-- `GROQ_STT_MODEL=whisper-large-v3-turbo`
 - `SARVAM_API_KEY`
+- `SARVAM_STT_URL=wss://api.sarvam.ai/speech-to-text-realtime/ws`
+- `SARVAM_STT_MODEL=saaras:v3-realtime`
+- `SARVAM_STT_LANGUAGE=auto`
+- `SARVAM_STT_MODE=codemix`
 - `SARVAM_VOICE_ID`
 - `SARVAM_TTS_URL=https://api.sarvam.ai/text-to-speech`
 - `SARVAM_LANGUAGE=auto` to follow the caller's detected language
 - `TWILIO_STATUS_CALLBACK_URL`
 - `CALL_MEMORY_SYNC_URL`
 
-When `SARVAM_LANGUAGE=auto`, Groq Whisper detects the caller's language and the bridge instructs OpenRouter to reply in that language. Sarvam TTS supports English, Hindi, Bengali, Gujarati, Kannada, Malayalam, Marathi, Odia, Punjabi, Tamil, Telugu, and Hinglish through Hindi voice output.
+When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs OpenRouter to reply in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. Sarvam TTS supports English, Hindi, Bengali, Gujarati, Kannada, Malayalam, Marathi, Odia, Punjabi, Tamil, Telugu, and Hinglish through Hindi voice output.
 
 Run locally with `npm install` then `npm start`.
