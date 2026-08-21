@@ -382,6 +382,24 @@ function normalizeCallerName(text) {
   return String(text || "").trim().replace(/\s+/g, " ").replace(/[?.!,]+$/g, "");
 }
 
+function memoryChunkLogView(memoryChunk = null) {
+  if (!memoryChunk) return null;
+
+  const facts = memoryChunk.facts && typeof memoryChunk.facts === "object" ? memoryChunk.facts : {};
+  return {
+    chunk_type: memoryChunk.chunk_type || null,
+    content: memoryChunk.content || null,
+    tags: Array.isArray(memoryChunk.tags) ? memoryChunk.tags : [],
+    symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [],
+    facts: {
+      current_activity: typeof facts.current_activity === "string" ? facts.current_activity : typeof facts.activity === "string" ? facts.activity : typeof facts.what_elder_is_doing === "string" ? facts.what_elder_is_doing : null,
+      interests: Array.isArray(facts.interests) ? facts.interests : Array.isArray(facts.interest) ? facts.interest : [],
+      keys: Object.keys(facts),
+    },
+    importance: typeof memoryChunk.importance === "number" ? memoryChunk.importance : null,
+  };
+}
+
 function extractCallerNameCandidate(text) {
   const sample = normalizeCallerName(text);
   if (!sample) return "";
@@ -513,6 +531,17 @@ async function generateFallbackReply(turns, language, systemPrompt = "") {
 
 async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, fullName, phoneE164, role = "user", memoryChunk = null, summary = "", turns = [], metadata = {} }) {
   if (!CALL_MEMORY_SYNC_URL || !transcript.trim()) return;
+  logEvent({
+    type: "memory.sync.request",
+    session_id: sessionId,
+    owner_id: ownerId || null,
+    caller_id: callerId || null,
+    elder_name: fullName || null,
+    phone_e164: phoneE164 || null,
+    summary: summary || null,
+    memory_chunk: memoryChunkLogView(memoryChunk),
+  });
+
   const response = await fetch(CALL_MEMORY_SYNC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -534,6 +563,22 @@ async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, f
     const details = await response.text();
     throw new Error(`call-memory-sync failed: ${details}`);
   }
+
+  const payload = await response.json().catch(() => null);
+  logEvent({
+    type: "memory.sync.saved",
+    session_id: sessionId,
+    owner_id: ownerId || null,
+    caller_id: payload?.caller_id || callerId || null,
+    elder_id: payload?.elder_id || payload?.caller_id || callerId || null,
+    elder_name: fullName || payload?.detected_name || null,
+    language: payload?.language || metadata?.language || null,
+    summary: summary || null,
+    memory_chunk: memoryChunkLogView(memoryChunk),
+    saved: true,
+  });
+
+  return payload;
 }
 
 async function synthesizeWithSarvam(text, languageHint = "") {
