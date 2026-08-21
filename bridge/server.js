@@ -60,6 +60,14 @@ function logEvent(event) {
   console.log(JSON.stringify(state.lastEvent));
 }
 
+logEvent({
+  type: "config.loaded",
+  voice_provider: "elevenlabs",
+  elevenlabs_api_key_configured: Boolean(ELEVENLABS_API_KEY),
+  elevenlabs_voice_id_configured: Boolean(ELEVENLABS_VOICE_ID),
+  elevenlabs_model_id: ELEVENLABS_MODEL_ID,
+});
+
 function xmlEscape(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -394,6 +402,7 @@ const server = http.createServer((req, res) => {
       lastError: state.lastError,
       voiceProvider: "elevenlabs",
       elevenLabsVoiceId: ELEVENLABS_VOICE_ID || null,
+      elevenLabsConfigured: Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID),
       recentEvents: state.recentEvents,
       openaiAudioChunks: state.openaiAudioChunks,
       twilioAudioPackets: state.twilioAudioPackets,
