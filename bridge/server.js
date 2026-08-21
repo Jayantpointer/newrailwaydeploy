@@ -15,9 +15,21 @@ const SARVAM_API_KEY = process.env.SARVAM_API_KEY || "";
 const SARVAM_VOICE_ID = process.env.SARVAM_VOICE_ID || "";
 const SARVAM_LANGUAGE = process.env.SARVAM_LANGUAGE || "en";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+let supabase = null;
+
+function getSupabase() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    return null;
+  }
+
+  if (!supabase) {
+    supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+  }
+
+  return supabase;
+}
 
 const state = {
   startedAt: Date.now(),
@@ -201,7 +213,14 @@ async function recordTurn({ sessionId, ownerId, callerId, role, content, metadat
     content: line,
   });
 
-  const { error } = await supabase.from("call_turns").insert({
+  const client = getSupabase();
+  if (!client) {
+    state.lastError = "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY";
+    logEvent({ type: "config.error", message: state.lastError });
+    return;
+  }
+
+  const { error } = await client.from("call_turns").insert({
     session_id: sessionId,
     owner_id: ownerId || null,
     caller_id: callerId || null,
@@ -219,7 +238,14 @@ async function recordTurn({ sessionId, ownerId, callerId, role, content, metadat
 }
 
 async function loadAgentSettings() {
-  const { data, error } = await supabase
+  const client = getSupabase();
+  if (!client) {
+    state.lastError = "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY";
+    logEvent({ type: "config.error", message: state.lastError });
+    return {};
+  }
+
+  const { data, error } = await client
     .from("agent_settings")
     .select("agent_name,system_prompt,openai_realtime_model,sarvam_voice_id,sarvam_language")
     .eq("id", 1)
@@ -230,8 +256,13 @@ async function loadAgentSettings() {
 }
 
 async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName, callSid }) {
+  const client = getSupabase();
+  if (!client) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  }
+
   if (sessionId) {
-    const { data, error } = await supabase
+    const { data, error } = await client
       .from("call_sessions")
       .select("id, owner_id, caller_id")
       .eq("id", sessionId)
@@ -244,18 +275,18 @@ async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName
   let resolvedCallerId = callerId || null;
   if (phoneE164) {
     const callerQuery = ownerId
-      ? supabase.from("callers").select("id").eq("phone_e164", phoneE164).eq("owner_id", ownerId)
-      : supabase.from("callers").select("id").eq("phone_e164", phoneE164).is("owner_id", null);
+      ? client.from("callers").select("id").eq("phone_e164", phoneE164).eq("owner_id", ownerId)
+      : client.from("callers").select("id").eq("phone_e164", phoneE164).is("owner_id", null);
 
     const { data: existingCaller } = await callerQuery.maybeSingle();
 
     if (existingCaller?.id) {
       resolvedCallerId = existingCaller.id;
       if (fullName) {
-        await supabase.from("callers").update({ full_name: fullName }).eq("id", resolvedCallerId);
+        await client.from("callers").update({ full_name: fullName }).eq("id", resolvedCallerId);
       }
     } else {
-      const { data: newCaller, error: insertError } = await supabase
+      const { data: newCaller, error: insertError } = await client
         .from("callers")
         .insert({ owner_id: ownerId || null, phone_e164: phoneE164, full_name: fullName || null })
         .select("id")
@@ -266,7 +297,7 @@ async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName
     }
   }
 
-  const { data: session, error } = await supabase
+  const { data: session, error } = await client
     .from("call_sessions")
     .insert({
       owner_id: ownerId || null,
@@ -517,13 +548,21 @@ wss.on("connection", async (twilioWs, req) => {
     try {
       const message = JSON.parse(raw.toString());
 
-      if (message.event === "start") {
+  if (message.event === "start") {
         streamSid = message.start.streamSid || "";
         callSid = message.start.callSid || "";
         state.lastSessionId = resolvedSession.id;
         logEvent({ type: "twilio.start", session_id: resolvedSession.id, stream_sid: streamSid, call_sid: callSid });
 
-        await supabase
+        const client = getSupabase();
+        if (!client) {
+          state.lastError = "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY";
+          logEvent({ type: "config.error", session_id: resolvedSession.id, message: state.lastError });
+          twilioWs.close(1011, state.lastError);
+          return;
+        }
+
+        await client
           .from("call_sessions")
           .update({
             provider_call_id: callSid || undefined,
