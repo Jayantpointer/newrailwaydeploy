@@ -495,8 +495,14 @@ wss.on("connection", async (twilioWs, req) => {
   let assistantFallbackTimer = null;
   let assistantReplied = false;
   let realtimeAudioChunks = [];
+  let twilioReady = false;
+  const pendingTwilioMessages = [];
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
+
+  twilioWs.on("message", (raw) => {
+    if (!twilioReady) pendingTwilioMessages.push(raw);
+  });
 
   twilioWs.on("error", (error) => {
     state.lastError = error.message;
@@ -742,6 +748,11 @@ wss.on("connection", async (twilioWs, req) => {
       console.error("twilio message error", error);
     }
   });
+
+  twilioReady = true;
+  for (const pendingMessage of pendingTwilioMessages.splice(0)) {
+    twilioWs.emit("message", pendingMessage);
+  }
 
   twilioWs.on("close", () => {
     state.activeConnections = Math.max(0, state.activeConnections - 1);
