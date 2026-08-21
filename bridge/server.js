@@ -39,6 +39,10 @@ const state = {
   lastEvent: null,
   lastError: null,
   recentEvents: [],
+  openaiAudioChunks: 0,
+  twilioAudioPackets: 0,
+  sarvamRequests: 0,
+  sarvamErrors: 0,
 };
 
 function json(res, statusCode, data) {
@@ -224,8 +228,11 @@ async function pushTranscriptChunk({ sessionId, ownerId, callerId, transcript, f
 async function synthesizeWithSarvam(text, languageHint = "") {
   if (!SARVAM_TTS_URL || !SARVAM_API_KEY || !text.trim()) return null;
   const language = normalizeSarvamLanguage(languageHint, text);
+  state.sarvamRequests += 1;
 
-  const response = await fetch(SARVAM_TTS_URL, {
+  let response;
+  try {
+    response = await fetch(SARVAM_TTS_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -237,10 +244,17 @@ async function synthesizeWithSarvam(text, languageHint = "") {
       language,
       format: "mulaw_8000",
     }),
-  });
+    });
+  } catch (error) {
+    state.sarvamErrors += 1;
+    logEvent({ type: "sarvam.error", error: error.message });
+    return null;
+  }
 
   if (!response.ok) {
-    throw new Error(`Sarvam TTS failed with ${response.status}`);
+    state.sarvamErrors += 1;
+    logEvent({ type: "sarvam.error", status: response.status, statusText: response.statusText });
+    return null;
   }
 
   const contentType = response.headers.get("content-type") || "";
@@ -256,6 +270,7 @@ async function synthesizeWithSarvam(text, languageHint = "") {
 async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
   const audioBase64 = await synthesizeWithSarvam(text, languageHint);
   if (audioBase64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+    state.twilioAudioPackets += 1;
     logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
     twilioWs.send(JSON.stringify({
       event: "media",
@@ -403,6 +418,10 @@ const server = http.createServer((req, res) => {
       lastEvent: state.lastEvent,
       lastError: state.lastError,
       recentEvents: state.recentEvents,
+      openaiAudioChunks: state.openaiAudioChunks,
+      twilioAudioPackets: state.twilioAudioPackets,
+      sarvamRequests: state.sarvamRequests,
+      sarvamErrors: state.sarvamErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -527,6 +546,7 @@ wss.on("connection", async (twilioWs, req) => {
       }
 
       if (eventType === "response.audio.delta" || eventType === "response.output_audio.delta") {
+        state.openaiAudioChunks += 1;
         realtimeAudioSent = true;
         assistantReplied = true;
         if (assistantFallbackTimer) {
@@ -535,6 +555,7 @@ wss.on("connection", async (twilioWs, req) => {
         }
 
         if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+          state.twilioAudioPackets += 1;
           logEvent({ type: "audio.sent", source: "openai_realtime", stream_sid: streamSid });
           twilioWs.send(JSON.stringify({
             event: "media",
