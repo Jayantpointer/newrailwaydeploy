@@ -355,12 +355,21 @@ async function createOpenAIConnection(context, outbound) {
     ws.send(JSON.stringify({
       type: "session.update",
       session: {
+        type: "realtime",
+        model: context.model || OPENAI_REALTIME_MODEL,
         instructions: context.systemPrompt,
-        modalities: ["text", "audio"],
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        input_audio_transcription: { model: "whisper-1" },
-        turn_detection: { type: "server_vad", create_response: false, interrupt_response: true },
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            format: { type: "audio/pcmu" },
+            transcription: { model: "whisper-1" },
+            turn_detection: { type: "server_vad", create_response: false, interrupt_response: true },
+          },
+          output: {
+            format: { type: "audio/pcmu" },
+            voice: "alloy",
+          },
+        },
       },
     }));
 
@@ -509,7 +518,7 @@ wss.on("connection", async (twilioWs, req) => {
         logEvent({ type: "openai.error", session_id: resolvedSession.id, error: event.error || event });
       }
 
-      if (eventType === "response.audio.delta") {
+      if (eventType === "response.audio.delta" || eventType === "response.output_audio.delta") {
         realtimeAudioSent = true;
         assistantReplied = true;
         if (assistantFallbackTimer) {
@@ -569,11 +578,15 @@ wss.on("connection", async (twilioWs, req) => {
         openaiWs.send(JSON.stringify({ type: "response.create" }));
       }
 
-      if (eventType === "response.output_text.delta" || eventType === "response.text.delta") {
+      if (
+        eventType === "response.output_text.delta" ||
+        eventType === "response.text.delta" ||
+        eventType === "response.output_audio_transcript.delta"
+      ) {
         assistantTranscript += event.delta || event.text || "";
       }
 
-      if (eventType === "response.completed" || eventType === "response.output_text.done") {
+      if (eventType === "response.completed" || eventType === "response.done" || eventType === "response.output_text.done") {
         const finalText = assistantTranscript.trim();
         assistantTranscript = "";
         assistantReplied = true;
