@@ -398,7 +398,7 @@ async function createOpenAIConnection(context, outbound) {
           input: {
             format: { type: "audio/pcmu" },
             transcription: { model: "gpt-4o-mini-transcribe" },
-            turn_detection: { type: "server_vad", create_response: true, interrupt_response: true },
+            turn_detection: { type: "server_vad", create_response: false, interrupt_response: true },
           },
           output: {
             format: { type: "audio/pcmu" },
@@ -408,16 +408,6 @@ async function createOpenAIConnection(context, outbound) {
       },
     }));
 
-    ws.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: "Begin the call by greeting briefly and asking for the user's name first." }],
-      },
-    }));
-
-    ws.send(JSON.stringify({ type: "response.create" }));
     outbound.onOpen?.();
   });
 
@@ -571,6 +561,16 @@ wss.on("connection", async (twilioWs, req) => {
           assistantFallbackTimer = null;
         }
 
+        if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+          state.twilioAudioPackets += 1;
+          twilioWs.send(JSON.stringify({
+            event: "media",
+            streamSid,
+            media: { payload: event.delta },
+          }));
+          logEvent({ type: "audio.sent", source: "openai_realtime", stream_sid: streamSid });
+        }
+
       }
 
       if (eventType === "conversation.item.input_audio_transcription.completed") {
@@ -615,6 +615,11 @@ wss.on("connection", async (twilioWs, req) => {
             sendBufferedOpenAIAudio(twilioWs, streamSid, realtimeAudioChunks);
           }
         }, 3500);
+
+        if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+          logEvent({ type: "openai.response.requested", session_id: resolvedSession.id });
+          openaiWs.send(JSON.stringify({ type: "response.create" }));
+        }
       }
 
       if (
