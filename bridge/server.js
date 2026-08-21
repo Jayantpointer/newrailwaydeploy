@@ -378,6 +378,36 @@ function normalizeAssistantReply(text) {
   return reply;
 }
 
+function normalizeCallerName(text) {
+  return String(text || "").trim().replace(/\s+/g, " ").replace(/[?.!,]+$/g, "");
+}
+
+function extractCallerNameCandidate(text) {
+  const sample = normalizeCallerName(text);
+  if (!sample) return "";
+
+  const prefixed = sample.match(/(?:my name is|i am|i'm|call me|this is)\s+(.+)/i);
+  if (prefixed?.[1]) {
+    const cleaned = normalizeCallerName(prefixed[1].split(/\b(?:and|but|because|with)\b/i)[0].split(/[,.!?]/)[0]);
+    if (cleaned && cleaned.split(/\s+/).length <= 3) return cleaned;
+  }
+
+  const parts = sample.split(/\s+/);
+  if (parts.length <= 3 && /^[A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)*$/.test(sample)) {
+    return sample;
+  }
+
+  return "";
+}
+
+function isAffirmativeReply(text) {
+  return /^(yes|yeah|yep|yup|correct|right|sure|indeed|exactly|of course|please do)\b/i.test(normalizeCallerName(text));
+}
+
+function isNegativeReply(text) {
+  return /^(no|nope|nah|not really|never|don't think so|do not think so|i don't think so)\b/i.test(normalizeCallerName(text));
+}
+
 async function extractImportantMemory(transcript) {
   const text = transcript.trim();
   if (!text) return null;
@@ -397,11 +427,11 @@ async function extractImportantMemory(transcript) {
         max_tokens: 400,
         temperature: 0,
         messages: [
-          {
-            role: "system",
-            content:
-              "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
-          },
+            {
+              role: "system",
+              content:
+                "Extract only durable call memory for a family elder app. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. In facts, include current_activity as a short string, interests as an array of short strings, and symptoms as an array of reported symptoms when the caller explicitly mentions them. Exclude secrets, payment details, and private identifiers unless they are needed for follow-up. Keep content short and factual.",
+            },
           {
             role: "user",
             content: `Transcript:\n${text}`,
@@ -605,7 +635,7 @@ async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName
       if (fullName) {
         await client.from("callers").update({ full_name: fullName }).eq("id", resolvedCallerId);
       }
-    } else {
+    } else if (fullName) {
       const { data: newCaller, error: insertError } = await client
         .from("callers")
         .insert({ owner_id: ownerId || null, phone_e164: phoneE164, full_name: fullName || null })
@@ -743,6 +773,7 @@ wss.on("connection", async (twilioWs, req) => {
   let sarvamSttEndResolve = null;
   const pendingSarvamAudio = [];
   const pendingTranscripts = [];
+  let pendingCallerMatch = null;
   let turnProcessing = false;
   let callStopping = false;
 
@@ -772,6 +803,85 @@ wss.on("connection", async (twilioWs, req) => {
     const resolve = sarvamSttEndResolve;
     sarvamSttEndResolve = null;
     resolve();
+  }
+
+  async function updateSessionCallerId(callerIdValue) {
+    resolvedSession.caller_id = callerIdValue;
+    const client = getSupabase();
+    if (!client || !resolvedSession.id || !callerIdValue) return;
+
+    await client
+      .from("call_sessions")
+      .update({ caller_id: callerIdValue })
+      .eq("id", resolvedSession.id);
+  }
+
+  async function findCallerByName(name) {
+    const client = getSupabase();
+    const normalized = normalizeCallerName(name);
+    if (!client || !normalized) return null;
+
+    const query = ownerId
+      ? client.from("callers").select("id, full_name, phone_e164").eq("owner_id", ownerId).ilike("full_name", normalized).order("updated_at", { ascending: false }).limit(5)
+      : client.from("callers").select("id, full_name, phone_e164").is("owner_id", null).ilike("full_name", normalized).order("updated_at", { ascending: false }).limit(5);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    if (!Array.isArray(data) || !data.length) return null;
+    return data[0];
+  }
+
+  async function createCallerProfile(fullName) {
+    const client = getSupabase();
+    const normalizedName = normalizeCallerName(fullName);
+    if (!client || !normalizedName || !phoneE164) return null;
+
+    const { data, error } = await client
+      .from("callers")
+      .insert({
+        owner_id: ownerId || null,
+        phone_e164: phoneE164,
+        full_name: normalizedName,
+      })
+      .select("id, full_name, phone_e164")
+      .single();
+
+    if (error) throw error;
+    return data || null;
+  }
+
+  async function linkCallerProfile(caller) {
+    if (!caller?.id) return;
+    await updateSessionCallerId(caller.id);
+
+    const client = getSupabase();
+    if (!client) return;
+
+    if (caller.full_name) {
+      await client.from("callers").update({ full_name: normalizeCallerName(caller.full_name) }).eq("id", caller.id);
+    }
+  }
+
+  async function deliverAssistantReply(reply, source = "openrouter") {
+    conversationTurns.push({ role: "assistant", content: reply });
+    logEvent({
+      type: "conversation.line",
+      session_id: resolvedSession.id,
+      role: "assistant",
+      content: reply,
+      language: conversationLanguage,
+      source,
+    });
+
+    const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {
+      logEvent({ type: "sarvam.error", error: error.message });
+      return null;
+    });
+    if (sarvamAudio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+      state.twilioAudioPackets += 1;
+      twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
+      logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
+    }
   }
 
   function handleSarvamSttMessage(raw) {
@@ -891,38 +1001,73 @@ wss.on("connection", async (twilioWs, req) => {
   }
 
   async function processTranscript({ transcript, detectedLanguage }) {
-    userTranscript = `${userTranscript} ${transcript}`.trim();
-    conversationLanguage = detectLanguageMode(transcript, detectedLanguage || conversationLanguage);
-    conversationTurns.push({ role: "user", content: transcript });
+    const cleanTranscript = normalizeCallerName(transcript);
+    userTranscript = `${userTranscript} ${cleanTranscript}`.trim();
+    conversationLanguage = detectLanguageMode(cleanTranscript, detectedLanguage || conversationLanguage);
+
+    conversationTurns.push({ role: "user", content: cleanTranscript });
     logEvent({
       type: "conversation.line",
       session_id: resolvedSession.id,
       role: "user",
-      content: transcript,
+      content: cleanTranscript,
       language: conversationLanguage,
       source: "sarvam_stt",
     });
 
-    const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
-    conversationTurns.push({ role: "assistant", content: reply });
-    logEvent({
-      type: "conversation.line",
-      session_id: resolvedSession.id,
-      role: "assistant",
-      content: reply,
-      language: conversationLanguage,
-      source: "openrouter",
-    });
+    if (pendingCallerMatch) {
+      const candidate = pendingCallerMatch.candidate;
+      const proposedName = pendingCallerMatch.proposedName;
+      pendingCallerMatch = null;
 
-    const sarvamAudio = await synthesizeWithSarvam(reply, conversationLanguage).catch((error) => {
-      logEvent({ type: "sarvam.error", error: error.message });
-      return null;
-    });
-    if (sarvamAudio && streamSid && twilioWs.readyState === WebSocket.OPEN) {
-      state.twilioAudioPackets += 1;
-      twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
-      logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
+      if (isAffirmativeReply(cleanTranscript)) {
+        await linkCallerProfile(candidate);
+        await deliverAssistantReply(`Okay. I’ll use ${candidate.full_name || proposedName} from here.`, "elder_match");
+        return;
+      }
+
+      if (isNegativeReply(cleanTranscript)) {
+        if (candidate.phone_e164 && phoneE164 && candidate.phone_e164 === phoneE164) {
+          await linkCallerProfile(candidate);
+          await deliverAssistantReply(`Okay. I’ll keep the existing profile for ${candidate.full_name || proposedName}.`, "elder_match_same_phone");
+          return;
+        }
+
+        const newCaller = await createCallerProfile(proposedName);
+        if (newCaller?.id) {
+          await linkCallerProfile(newCaller);
+          await deliverAssistantReply(`Okay. I made a new profile for ${proposedName}.`, "elder_new");
+          return;
+        }
+      }
+
+      await deliverAssistantReply("Was that a yes or a no?", "elder_confirm");
+      pendingCallerMatch = candidate ? { candidate, proposedName } : null;
+      return;
     }
+
+    if (!resolvedSession.caller_id) {
+      const callerName = extractCallerNameCandidate(cleanTranscript) || normalizeCallerName(fullName);
+      if (callerName) {
+        const existingCaller = await findCallerByName(callerName);
+
+        if (existingCaller?.id) {
+          pendingCallerMatch = { candidate: existingCaller, proposedName: callerName };
+          await deliverAssistantReply(`I think I may have talked with someone named ${existingCaller.full_name || callerName} before. Have we talked before?`, "elder_match_prompt");
+          return;
+        }
+
+        const newCaller = await createCallerProfile(callerName);
+        if (newCaller?.id) {
+          await linkCallerProfile(newCaller);
+          await deliverAssistantReply(`Thanks, ${callerName}.`, "elder_new_prompt");
+          return;
+        }
+      }
+    }
+
+    const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
+    await deliverAssistantReply(reply, "openrouter");
   }
 
   async function drainTranscriptQueue() {

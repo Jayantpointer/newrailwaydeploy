@@ -64,6 +64,81 @@ function detectLanguageMode(text: string) {
   return "en";
 }
 
+function normalizeText(value: unknown) {
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+}
+
+function normalizeStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [] as string[];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => normalizeText(item))
+        .filter((item): item is string => Boolean(item)),
+    ),
+  );
+}
+
+function extractProfileFacts(memoryChunk?: MemorySyncPayload["memory_chunk"]) {
+  const facts = memoryChunk?.facts ?? {};
+  const currentActivity = normalizeText(facts.current_activity ?? facts.activity ?? facts.what_elder_is_doing);
+  const interests = normalizeStringArray(facts.interests ?? facts.interest);
+  const symptoms = normalizeStringArray(memoryChunk?.symptoms ?? facts.symptoms);
+
+  return {
+    currentActivity,
+    interests,
+    symptoms,
+  };
+}
+
+async function resolveCallerId(payload: MemorySyncPayload, ownerId: string | null, detectedName: string) {
+  const phoneE164 = normalizeText(payload.phone_e164);
+  const suppliedCallerId = normalizeText(payload.caller_id);
+  const normalizedName = normalizeText(payload.full_name || detectedName);
+
+  if (suppliedCallerId) return suppliedCallerId;
+
+  if (phoneE164) {
+    const phoneQuery = ownerId
+      ? admin.from("callers").select("id").eq("owner_id", ownerId).eq("phone_e164", phoneE164)
+      : admin.from("callers").select("id").is("owner_id", null).eq("phone_e164", phoneE164);
+
+    const { data: existingByPhone, error: phoneError } = await phoneQuery.maybeSingle();
+    if (phoneError) throw phoneError;
+    if (existingByPhone?.id) return existingByPhone.id as string;
+
+    if (normalizedName) {
+      const nameQuery = ownerId
+        ? admin.from("callers").select("id").eq("owner_id", ownerId).ilike("full_name", normalizedName)
+        : admin.from("callers").select("id").is("owner_id", null).ilike("full_name", normalizedName);
+
+      const { data: nameMatches, error: nameError } = await nameQuery.limit(2);
+      if (nameError) throw nameError;
+      if (Array.isArray(nameMatches) && nameMatches.length === 1) return nameMatches[0].id as string;
+    }
+
+    if (normalizedName) {
+      const { data: createdCaller, error: createError } = await admin
+        .from("callers")
+        .insert({
+          owner_id: ownerId,
+          phone_e164: phoneE164,
+          full_name: normalizedName,
+          preferred_language: detectLanguageMode(payload.transcript || payload.summary || normalizedName),
+          metadata: { source: "transcript_sync", language: detectLanguageMode(payload.transcript || payload.summary || normalizedName) },
+        })
+        .select("id")
+        .single();
+
+      if (createError) throw createError;
+      return createdCaller?.id ?? null;
+    }
+  }
+
+  return null;
+}
+
 async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | null, callerId: string | null, language: string) {
   const content = payload.memory_chunk?.content?.trim() || payload.summary?.trim();
   if (!content) return;
@@ -113,14 +188,17 @@ Deno.serve(async (req) => {
   }
 
   const ownerId = body.owner_id ?? session.owner_id ?? null;
-  const callerId = body.caller_id ?? session.caller_id ?? null;
-  const language = body.metadata?.language ? String(body.metadata.language) : detectLanguageMode(body.transcript || body.summary || "");
+  const transcript = body.transcript ?? "";
+  const detectedName = body.full_name ?? detectCallerName(transcript);
+  const language = body.metadata?.language ? String(body.metadata.language) : detectLanguageMode(transcript || body.summary || detectedName);
+  const profileFacts = extractProfileFacts(body.memory_chunk);
+  const resolvedCallerId = await resolveCallerId(body, ownerId, detectedName);
 
   const { error: sessionUpdateError } = await admin
     .from("call_sessions")
     .update({
       owner_id: ownerId,
-      caller_id: callerId,
+      caller_id: resolvedCallerId,
       summary: body.summary ?? undefined,
       last_activity_at: new Date().toISOString(),
       metadata: {
@@ -135,95 +213,79 @@ Deno.serve(async (req) => {
     return Response.json({ error: sessionUpdateError.message }, { status: 400, headers: corsHeaders });
   }
 
-  if (callerId) {
-    const { error: callerLanguageError } = await admin
-      .from("callers")
-      .update({ preferred_language: language })
-      .eq("id", callerId);
+  let callerData: { symptoms?: string[]; interests?: string[]; current_activity?: string; metadata?: Record<string, unknown>; full_name?: string | null } | null = null;
 
-    if (callerLanguageError) {
-      return Response.json({ error: callerLanguageError.message }, { status: 400, headers: corsHeaders });
-    }
+  if (resolvedCallerId) {
+    const { data, error } = await admin
+      .from("callers")
+      .select("symptoms, interests, current_activity, metadata, full_name")
+      .eq("id", resolvedCallerId)
+      .maybeSingle();
+
+    if (error) return Response.json({ error: error.message }, { status: 400, headers: corsHeaders });
+    callerData = data;
   }
 
-  const symptomList = Array.isArray(body.memory_chunk?.symptoms) ? body.memory_chunk?.symptoms.filter(Boolean) : [];
+  const mergedSymptoms = Array.from(new Set([...(callerData?.symptoms ?? []), ...profileFacts.symptoms]));
+  const mergedInterests = Array.from(new Set([...(callerData?.interests ?? []), ...profileFacts.interests]));
+  const currentActivity = profileFacts.currentActivity || callerData?.current_activity || "";
 
-  const transcript = body.transcript ?? "";
-  const detectedName = body.full_name ?? detectCallerName(transcript);
-
-  if (detectedName) {
+  if (resolvedCallerId) {
     const { error: callerUpdateError } = await admin
       .from("callers")
-      .update({ full_name: detectedName })
-      .eq("id", callerId)
-      .eq("owner_id", ownerId);
+      .update({
+        full_name: detectedName || callerData?.full_name || undefined,
+        preferred_language: language,
+        current_activity: currentActivity || undefined,
+        interests: mergedInterests,
+        symptoms: mergedSymptoms,
+        metadata: {
+          ...(callerData?.metadata ?? {}),
+          elder_profile: {
+            ...(typeof callerData?.metadata?.elder_profile === "object" && callerData.metadata?.elder_profile !== null ? callerData.metadata.elder_profile : {}),
+            current_activity: currentActivity || undefined,
+            interests: mergedInterests,
+            symptoms: mergedSymptoms,
+            last_synced_at: new Date().toISOString(),
+          },
+          source: "transcript_sync",
+          language,
+        },
+      })
+      .eq("id", resolvedCallerId);
 
-    if (callerUpdateError && callerId) {
+    if (callerUpdateError) {
       return Response.json({ error: callerUpdateError.message }, { status: 400, headers: corsHeaders });
     }
+  } else if (detectedName) {
+    const { error: sessionMetadataError } = await admin
+      .from("call_sessions")
+      .update({
+        metadata: {
+          ...(body.metadata ?? {}),
+          detected_caller_name: detectedName,
+          language,
+        },
+      })
+      .eq("id", body.session_id);
 
-    if (!callerId) {
-      if (body.phone_e164) {
-      const { error: callerInsertError } = await admin.from("callers").insert({
-        owner_id: ownerId,
-        phone_e164: body.phone_e164,
-        full_name: detectedName,
-        preferred_language: language,
-        symptoms: [],
-        metadata: { source: "transcript_sync", language },
-      });
-
-        if (callerInsertError) {
-          return Response.json({ error: callerInsertError.message }, { status: 400, headers: corsHeaders });
-        }
-      } else {
-        const { error: sessionMetadataError } = await admin
-          .from("call_sessions")
-          .update({
-          metadata: {
-            ...(body.metadata ?? {}),
-            detected_caller_name: detectedName,
-            language,
-          },
-        })
-        .eq("id", body.session_id);
-
-        if (sessionMetadataError) {
-          return Response.json({ error: sessionMetadataError.message }, { status: 400, headers: corsHeaders });
-        }
-      }
+    if (sessionMetadataError) {
+      return Response.json({ error: sessionMetadataError.message }, { status: 400, headers: corsHeaders });
     }
   }
 
   try {
-    await saveMemoryChunk(body, ownerId, callerId, language);
+    await saveMemoryChunk(body, ownerId, resolvedCallerId, language);
   } catch (error) {
     return Response.json({ error: (error as Error).message }, { status: 400, headers: corsHeaders });
-  }
-
-  if (callerId && symptomList.length) {
-    const { data: existingCaller } = await admin
-      .from("callers")
-      .select("symptoms")
-      .eq("id", callerId)
-      .maybeSingle();
-
-    const mergedSymptoms = Array.from(new Set([...(existingCaller?.symptoms ?? []), ...symptomList]));
-    const { error: callerSymptomError } = await admin
-      .from("callers")
-      .update({ symptoms: mergedSymptoms, preferred_language: language })
-      .eq("id", callerId);
-
-    if (callerSymptomError) {
-      return Response.json({ error: callerSymptomError.message }, { status: 400, headers: corsHeaders });
-    }
   }
 
   return Response.json({
     ok: true,
     session_id: body.session_id,
     owner_id: ownerId,
-    caller_id: callerId,
+    caller_id: resolvedCallerId,
+    elder_id: resolvedCallerId,
     detected_name: detectedName || null,
     language,
   }, { headers: corsHeaders });

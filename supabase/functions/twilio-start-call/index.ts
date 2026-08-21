@@ -88,6 +88,7 @@ Deno.serve(async (req) => {
     const webhookUrl = new URL(body.voice_webhook_url ?? twilioVoiceWebhookUrl);
     webhookUrl.searchParams.set("session_id", sessionId);
     if (body.owner_id) webhookUrl.searchParams.set("owner_id", body.owner_id);
+    webhookUrl.searchParams.set("phone_e164", body.to);
 
     const statusCallbackUrl = new URL(twilioStatusCallbackUrl);
     statusCallbackUrl.searchParams.set("session_id", sessionId);
