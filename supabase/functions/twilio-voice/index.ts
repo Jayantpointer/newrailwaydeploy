@@ -21,7 +21,6 @@ Deno.serve(async (req) => {
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice" language="en-IN">Hi, I am your calling assistant. What name should I use for you?</Say>
   <Connect>
     <Stream url="${xmlEscape(targetStream)}">
       <Parameter name="session_id" value="${xmlEscape(sessionId)}" />
