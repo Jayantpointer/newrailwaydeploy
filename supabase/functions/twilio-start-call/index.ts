@@ -22,6 +22,7 @@ const twilioAccountSid = Deno.env.get("TWILIO_ACCOUNT_SID") ?? "";
 const twilioAuthToken = Deno.env.get("TWILIO_AUTH_TOKEN") ?? "";
 const twilioFromNumber = Deno.env.get("TWILIO_FROM_NUMBER") ?? "";
 const twilioVoiceWebhookUrl = Deno.env.get("TWILIO_VOICE_WEBHOOK_URL") ?? "";
+const twilioStatusCallbackUrl = Deno.env.get("TWILIO_STATUS_CALLBACK_URL") ?? "";
 
 const admin = createClient(supabaseUrl, serviceRoleKey, {
   auth: {
@@ -48,7 +49,7 @@ Deno.serve(async (req) => {
       return Response.json({ error: "Missing Supabase service role key" }, { status: 500, headers: corsHeaders });
     }
 
-    if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber || !twilioVoiceWebhookUrl) {
+    if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber || !twilioVoiceWebhookUrl || !twilioStatusCallbackUrl) {
       return Response.json(
         { error: "Missing Twilio env vars" },
         { status: 500, headers: corsHeaders },
@@ -88,11 +89,18 @@ Deno.serve(async (req) => {
     webhookUrl.searchParams.set("session_id", sessionId);
     if (body.owner_id) webhookUrl.searchParams.set("owner_id", body.owner_id);
 
+    const statusCallbackUrl = new URL(twilioStatusCallbackUrl);
+    statusCallbackUrl.searchParams.set("session_id", sessionId);
+    if (body.owner_id) statusCallbackUrl.searchParams.set("owner_id", body.owner_id);
+
     const form = new URLSearchParams();
     form.set("To", body.to);
     form.set("From", twilioFromNumber);
     form.set("Url", webhookUrl.toString());
     form.set("Method", "POST");
+    form.set("StatusCallback", statusCallbackUrl.toString());
+    form.set("StatusCallbackMethod", "POST");
+    form.set("StatusCallbackEvent", "initiated ringing answered completed");
 
     const twilioResponse = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Calls.json`,

@@ -201,6 +201,17 @@ function buildFallbackMemoryChunk(transcript) {
   };
 }
 
+function normalizeAssistantReply(text) {
+  const reply = (text || "").trim();
+  if (!reply) return "Sorry, I didn’t catch that. What should we do next?";
+
+  if (/(decided not to proceed|let's start fresh|let us start fresh|anything else|anything more|need anything else|goodbye|bye now)/i.test(reply)) {
+    return "What would you like to do next?";
+  }
+
+  return reply;
+}
+
 async function extractImportantMemory(transcript) {
   const text = transcript.trim();
   if (!text) return null;
@@ -311,11 +322,11 @@ async function generateFallbackReply(turns, language, systemPrompt = "") {
       body: JSON.stringify({
         model: OPENROUTER_MODEL,
         max_tokens: 300,
-        temperature: 0.2,
+        temperature: 0.1,
         messages: [
           {
             role: "system",
-            content: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
+            content: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep replies to 1 or 2 short sentences. Ask one simple question at a time. Never suggest the call is over, never imply the caller declined, and never say anything like goodbye, let's start fresh, or anything else. If the caller seems uncertain, keep the conversation moving with a neutral question. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
           },
           { role: "user", content: `Conversation:\n${text}` },
         ],
@@ -330,7 +341,7 @@ async function generateFallbackReply(turns, language, systemPrompt = "") {
     }
 
     const payload = await response.json();
-    return payload?.choices?.[0]?.message?.content?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
+    return normalizeAssistantReply(payload?.choices?.[0]?.message?.content);
   } catch {
     state.openrouterErrors += 1;
     return "Sorry, I didn’t catch that. What name should I use for you?";
@@ -716,7 +727,7 @@ wss.on("connection", async (twilioWs, req) => {
             .eq("id", resolvedSession.id);
 
           const settings = await loadAgentSettings();
-          systemPrompt = settings.system_prompt || "You are a warm, human-sounding phone assistant. Ask for the caller's name first.";
+          systemPrompt = settings.system_prompt || "You are a warm, human-sounding phone assistant. Keep replies short and neutral. Never imply the call is over or that the caller declined. Ask one simple question at a time.";
 
           if (!greeted) {
             greeted = true;
@@ -741,6 +752,17 @@ wss.on("connection", async (twilioWs, req) => {
         if (message.event === "stop") {
           logEvent({ type: "twilio.stop", session_id: resolvedSession.id });
           await drainTurns();
+          const client = getSupabase();
+          if (client && resolvedSession.id) {
+            await client
+              .from("call_sessions")
+              .update({
+                status: "completed",
+                ended_at: new Date().toISOString(),
+                last_activity_at: new Date().toISOString(),
+              })
+              .eq("id", resolvedSession.id);
+          }
           const fullTranscript = conversationTurns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
           const extracted = await extractImportantMemory(fullTranscript);
 

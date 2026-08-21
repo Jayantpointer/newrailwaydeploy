@@ -40,12 +40,14 @@ For Twilio outbound calls:
 1. Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_FROM_NUMBER`.
 2. Deploy `twilio-voice` as the TwiML webhook and set `TWILIO_VOICE_WEBHOOK_URL` to that public URL.
 3. Deploy `twilio-start-call` and call it with the destination number.
+4. Set `TWILIO_STATUS_CALLBACK_URL` to the deployed `twilio-call-status` function URL.
 
 Notes:
 
 - `TWILIO_FROM_NUMBER` is the Twilio phone number that starts the call.
 - Do not use `https://demo.twilio.com/welcome/voice/` for this setup; it will not connect to your agent.
 - `TWILIO_STREAM_URL` should be your public `wss://` media bridge.
+- `TWILIO_STATUS_CALLBACK_URL` should point at the Twilio call status webhook function.
 
 Bridge env vars:
 
@@ -58,6 +60,7 @@ Bridge env vars:
 - `SARVAM_VOICE_ID`
 - `SARVAM_TTS_URL=https://api.sarvam.ai/text-to-speech`
 - `SARVAM_LANGUAGE=auto`
+- `TWILIO_STATUS_CALLBACK_URL`
 - `CALL_MEMORY_SYNC_URL`
 
 Run locally with `npm install` then `npm start`.

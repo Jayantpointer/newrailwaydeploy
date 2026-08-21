@@ -35,8 +35,8 @@ const corsHeaders = {
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
-const anthropicModel = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-sonnet-4-5";
-const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+const openrouterModel = Deno.env.get("OPENROUTER_MODEL") ?? "meta-llama/llama-3.3-70b-instruct";
+const openrouterApiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
 const sarvamVoiceId = Deno.env.get("SARVAM_VOICE_ID") ?? "";
 const sarvamApiKey = Deno.env.get("SARVAM_API_KEY") ?? "";
 
@@ -223,9 +223,9 @@ Deno.serve(async (req) => {
       session_id: sessionId,
       caller_id: callerId,
       brain: {
-        model: anthropicModel,
+        model: settings?.anthropic_model ?? openrouterModel,
         system_prompt: settings?.system_prompt ?? "",
-        api_key_configured: Boolean(anthropicApiKey),
+        api_key_configured: Boolean(openrouterApiKey),
       },
       voice: {
         provider: "sarvam",
