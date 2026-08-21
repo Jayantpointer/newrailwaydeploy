@@ -615,9 +615,11 @@ wss.on("connection", async (twilioWs, req) => {
             return null;
           });
           if (sarvamAudio) {
+            assistantReplied = true;
             state.twilioAudioPackets += 1;
             twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: sarvamAudio } }));
           } else {
+            assistantReplied = true;
             sendBufferedOpenAIAudio(twilioWs, streamSid, realtimeAudioChunks);
           }
         }, 3500);
@@ -639,13 +641,13 @@ wss.on("connection", async (twilioWs, req) => {
       if (eventType === "response.completed" || eventType === "response.done" || eventType === "response.output_text.done") {
         const finalText = assistantTranscript.trim();
         assistantTranscript = "";
-        assistantReplied = true;
         if (assistantFallbackTimer) {
           clearTimeout(assistantFallbackTimer);
           assistantFallbackTimer = null;
         }
 
-        if (finalText) {
+        if (!assistantReplied && finalText) {
+          assistantReplied = true;
           conversationTurns.push({ role: "assistant", content: finalText });
           conversationLanguage = detectLanguageMode(finalText) || conversationLanguage;
           logEvent({
@@ -667,8 +669,8 @@ wss.on("connection", async (twilioWs, req) => {
           } else {
             sendBufferedOpenAIAudio(twilioWs, streamSid, realtimeAudioChunks);
           }
-          realtimeAudioChunks = [];
         }
+        realtimeAudioChunks = [];
       }
     } catch (error) {
       console.error("openai message error", error);
