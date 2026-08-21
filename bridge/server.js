@@ -625,25 +625,30 @@ async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName
   let resolvedCallerId = callerId || null;
   if (phoneE164) {
     const callerQuery = ownerId
-      ? client.from("callers").select("id").eq("phone_e164", phoneE164).eq("owner_id", ownerId)
-      : client.from("callers").select("id").eq("phone_e164", phoneE164).is("owner_id", null);
+      ? client.from("callers").select("id, full_name").eq("phone_e164", phoneE164).eq("owner_id", ownerId).order("updated_at", { ascending: false }).limit(2)
+      : client.from("callers").select("id, full_name").eq("phone_e164", phoneE164).is("owner_id", null).order("updated_at", { ascending: false }).limit(2);
 
-    const { data: existingCaller } = await callerQuery.maybeSingle();
+    const { data: existingCallers } = await callerQuery;
 
-    if (existingCaller?.id) {
-      resolvedCallerId = existingCaller.id;
-      if (fullName) {
-        await client.from("callers").update({ full_name: fullName }).eq("id", resolvedCallerId);
+    if (fullName) {
+      const exactMatch = Array.isArray(existingCallers)
+        ? existingCallers.find((caller) => normalizeCallerName(caller.full_name).toLowerCase() === normalizeCallerName(fullName).toLowerCase())
+        : null;
+
+      if (exactMatch?.id) {
+        resolvedCallerId = exactMatch.id;
+      } else {
+        const { data: newCaller, error: insertError } = await client
+          .from("callers")
+          .insert({ owner_id: ownerId || null, phone_e164: phoneE164, full_name: fullName || null })
+          .select("id")
+          .single();
+
+        if (insertError) throw insertError;
+        resolvedCallerId = newCaller.id;
       }
-    } else if (fullName) {
-      const { data: newCaller, error: insertError } = await client
-        .from("callers")
-        .insert({ owner_id: ownerId || null, phone_e164: phoneE164, full_name: fullName || null })
-        .select("id")
-        .single();
-
-      if (insertError) throw insertError;
-      resolvedCallerId = newCaller.id;
+    } else if (Array.isArray(existingCallers) && existingCallers.length === 1) {
+      resolvedCallerId = existingCallers[0].id;
     }
   }
 
