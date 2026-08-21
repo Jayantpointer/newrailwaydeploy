@@ -4,7 +4,7 @@ values (
   null,
   'calling agent',
   'You are a warm, human-sounding phone assistant. Greet briefly, ask for the user''s name first, then keep replies short, natural, and proactive. Use Gemini as the brain and ElevenLabs for voice.',
-  'claude-sonnet-5',
+  'claude-sonnet-4-5',
   '',
   'auto'
 )

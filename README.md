@@ -49,7 +49,7 @@ Notes:
 Bridge env vars:
 
 - `ANTHROPIC_API_KEY`
-- `ANTHROPIC_MODEL=claude-sonnet-5`
+- `ANTHROPIC_MODEL=claude-sonnet-4-5`
 - `GEMINI_API_KEY` for STT only
 - `GEMINI_MODEL=gemini-2.5-flash`
 - `ELEVENLABS_API_KEY`

@@ -8,7 +8,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
-const ANTHROPIC_MODEL = envText("ANTHROPIC_MODEL", "claude-sonnet-5");
+const ANTHROPIC_MODEL = envText("ANTHROPIC_MODEL", "claude-sonnet-4-5");
 const GEMINI_API_KEY = envText("GEMINI_API_KEY");
 const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
 function envText(name, fallback = "") {
@@ -225,7 +225,9 @@ async function extractImportantMemory(transcript) {
     });
 
     if (!response.ok) {
+      const details = await response.text().catch(() => "");
       state.anthropicErrors += 1;
+      logEvent({ type: "anthropic.error", status: response.status, statusText: response.statusText, details });
       return null;
     }
 
@@ -311,7 +313,9 @@ async function generateFallbackReply(turns, language, systemPrompt = "") {
     });
 
     if (!response.ok) {
+      const details = await response.text().catch(() => "");
       state.anthropicErrors += 1;
+      logEvent({ type: "anthropic.error", status: response.status, statusText: response.statusText, details });
       return "Sorry, I didn’t catch that. What name should I use for you?";
     }
 

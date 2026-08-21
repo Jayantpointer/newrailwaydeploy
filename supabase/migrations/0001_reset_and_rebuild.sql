@@ -15,7 +15,7 @@ create table public.agent_settings (
   owner_id uuid references auth.users (id) on delete cascade,
   agent_name text not null default 'calling agent',
   system_prompt text not null default 'You are a warm, human-sounding phone assistant. Greet briefly, ask for the caller''s name first, then keep replies short, natural, and proactive. Use Gemini as the brain and ElevenLabs for voice.',
-  anthropic_model text not null default 'claude-sonnet-5',
+  anthropic_model text not null default 'claude-sonnet-4-5',
   sarvam_voice_id text not null default '',
   sarvam_language text not null default 'auto',
   created_at timestamptz not null default now(),
