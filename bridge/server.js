@@ -253,6 +253,7 @@ async function synthesizeWithSarvam(text, languageHint = "") {
 async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
   const audioBase64 = await synthesizeWithSarvam(text, languageHint);
   if (audioBase64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+    logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
     twilioWs.send(JSON.stringify({
       event: "media",
       streamSid,
@@ -356,11 +357,11 @@ async function createOpenAIConnection(context, outbound) {
       type: "session.update",
       session: {
         instructions: context.systemPrompt,
-        modalities: ["text"],
+        modalities: ["text", "audio"],
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         input_audio_transcription: { model: "whisper-1" },
-        turn_detection: { type: "server_vad" },
+        turn_detection: { type: "server_vad", create_response: false, interrupt_response: true },
       },
     }));
 
@@ -455,6 +456,7 @@ wss.on("connection", async (twilioWs, req) => {
   let conversationLanguage = "en";
   let assistantFallbackTimer = null;
   let assistantReplied = false;
+  let realtimeAudioSent = false;
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
 
@@ -503,6 +505,29 @@ wss.on("connection", async (twilioWs, req) => {
         logEvent({ type: "openai.event", session_id: resolvedSession.id, event_type: eventType });
       }
 
+      if (eventType === "error") {
+        state.lastError = event.error?.message || "OpenAI realtime error";
+        logEvent({ type: "openai.error", session_id: resolvedSession.id, error: event.error || event });
+      }
+
+      if (eventType === "response.audio.delta") {
+        realtimeAudioSent = true;
+        assistantReplied = true;
+        if (assistantFallbackTimer) {
+          clearTimeout(assistantFallbackTimer);
+          assistantFallbackTimer = null;
+        }
+
+        if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+          logEvent({ type: "audio.sent", source: "openai_realtime", stream_sid: streamSid });
+          twilioWs.send(JSON.stringify({
+            event: "media",
+            streamSid,
+            media: { payload: event.delta },
+          }));
+        }
+      }
+
       if (eventType === "conversation.item.input_audio_transcription.completed") {
         const text = event.transcript || event.text || "";
         userTranscript = `${userTranscript} ${text}`.trim();
@@ -516,19 +541,8 @@ wss.on("connection", async (twilioWs, req) => {
           language: conversationLanguage,
         });
 
-        if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-          openaiWs.send(JSON.stringify({
-            type: "conversation.item.create",
-            item: {
-              type: "message",
-              role: "user",
-              content: [{ type: "input_text", text }],
-            },
-          }));
-          openaiWs.send(JSON.stringify({ type: "response.create" }));
-        }
-
         assistantReplied = false;
+        realtimeAudioSent = false;
         if (assistantFallbackTimer) {
           clearTimeout(assistantFallbackTimer);
         }
@@ -545,8 +559,15 @@ wss.on("connection", async (twilioWs, req) => {
             language: conversationLanguage,
             source: "fallback",
           });
-          await sendAudioToTwilio(twilioWs, streamSid, reply, conversationLanguage).catch((error) => console.error(error));
+          if (!realtimeAudioSent) {
+            await sendAudioToTwilio(twilioWs, streamSid, reply, conversationLanguage).catch((error) => console.error(error));
+          }
         }, 3500);
+      }
+
+      if (eventType === "input_audio_buffer.speech_stopped" && openaiWs.readyState === WebSocket.OPEN) {
+        logEvent({ type: "openai.response.requested", session_id: resolvedSession.id });
+        openaiWs.send(JSON.stringify({ type: "response.create" }));
       }
 
       if (eventType === "response.output_text.delta" || eventType === "response.text.delta") {
@@ -573,7 +594,9 @@ wss.on("connection", async (twilioWs, req) => {
             language: conversationLanguage,
           });
 
-          await sendAudioToTwilio(twilioWs, streamSid, finalText, conversationLanguage).catch((error) => console.error(error));
+          if (!realtimeAudioSent) {
+            await sendAudioToTwilio(twilioWs, streamSid, finalText, conversationLanguage).catch((error) => console.error(error));
+          }
         }
       }
     } catch (error) {
