@@ -611,12 +611,6 @@ wss.on("connection", async (twilioWs, req) => {
             content: "Hi, I’m your calling assistant. What name should I use for you?",
             metadata: { source: "initial_greeting", language: conversationLanguage },
           }).catch((error) => console.error("record greeting failed", error));
-          await sendAudioToTwilio(
-            twilioWs,
-            streamSid,
-            "Hi, I’m your calling assistant. What name should I use for you?",
-            conversationLanguage,
-          ).catch((error) => console.error(error));
         }
       }
 
