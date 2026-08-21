@@ -38,6 +38,7 @@ const state = {
   lastSessionId: null,
   lastEvent: null,
   lastError: null,
+  recentEvents: [],
 };
 
 function json(res, statusCode, data) {
@@ -47,6 +48,8 @@ function json(res, statusCode, data) {
 
 function logEvent(event) {
   state.lastEvent = { ...event, at: new Date().toISOString() };
+  state.recentEvents.push(state.lastEvent);
+  if (state.recentEvents.length > 30) state.recentEvents.shift();
   console.log(JSON.stringify(state.lastEvent));
 }
 
@@ -362,8 +365,8 @@ async function createOpenAIConnection(context, outbound) {
         audio: {
           input: {
             format: { type: "audio/pcmu" },
-            transcription: { model: "whisper-1" },
-            turn_detection: { type: "server_vad", create_response: false, interrupt_response: true },
+            transcription: { model: "gpt-4o-mini-transcribe" },
+            turn_detection: { type: "server_vad", create_response: true, interrupt_response: true },
           },
           output: {
             format: { type: "audio/pcmu" },
@@ -399,6 +402,7 @@ const server = http.createServer((req, res) => {
       lastSessionId: state.lastSessionId,
       lastEvent: state.lastEvent,
       lastError: state.lastError,
+      recentEvents: state.recentEvents,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -499,6 +503,10 @@ wss.on("connection", async (twilioWs, req) => {
       state.lastError = error.message;
       logEvent({ type: "openai.error", session_id: resolvedSession.id, error: error.message });
     });
+
+    openaiWs.on("close", (code, reason) => {
+      logEvent({ type: "openai.closed", session_id: resolvedSession.id, code, reason: reason.toString() });
+    });
   } catch (error) {
     twilioWs.close(1011, error.message);
     return;
@@ -571,11 +579,6 @@ wss.on("connection", async (twilioWs, req) => {
             await sendAudioToTwilio(twilioWs, streamSid, reply, conversationLanguage).catch((error) => console.error(error));
           }
         }, 3500);
-      }
-
-      if (eventType === "input_audio_buffer.speech_stopped" && openaiWs.readyState === WebSocket.OPEN) {
-        logEvent({ type: "openai.response.requested", session_id: resolvedSession.id });
-        openaiWs.send(JSON.stringify({ type: "response.create" }));
       }
 
       if (
