@@ -7,7 +7,7 @@ Current pieces:
 - Transcript sync writes turns, caller name, and memory into Supabase
 - Edge function scaffold for call orchestration
 - OpenAI realtime configured as the brain default
-- Sarvam reserved for voice output/input wiring
+- ElevenLabs used for voice output
 - Twilio outbound call starter and voice webhook scaffold
 - Railway bridge server for Twilio media streams
 
@@ -51,10 +51,9 @@ Bridge env vars:
 - `OPENAI_API_KEY`
 - `OPENAI_REALTIME_MODEL=gpt-realtime-2.1`
 - `OPENAI_MEMORY_MODEL=gpt-4.1-mini`
-- `SARVAM_API_KEY`
-- `SARVAM_VOICE_ID`
-- `SARVAM_TTS_URL`
+- `ELEVENLABS_API_KEY`
+- `ELEVENLABS_VOICE_ID`
+- `ELEVENLABS_MODEL_ID=eleven_multilingual_v2`
 - `CALL_MEMORY_SYNC_URL`
-- `SARVAM_LANGUAGE=auto` for mixed English/Hindi/Hinglish
 
 Run locally with `npm install` then `npm start`.
