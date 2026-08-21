@@ -7,8 +7,9 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
-const GEMINI_API_KEY = envText("GEMINI_API_KEY");
-const GEMINI_MODEL = envText("GEMINI_MODEL", "gemini-2.5-flash");
+const GROQ_API_KEY = envText("GROQ_API_KEY");
+const GROQ_MODEL = envText("GROQ_MODEL", "openai/gpt-oss-120b");
+const GROQ_STT_MODEL = envText("GROQ_STT_MODEL", "whisper-large-v3-turbo");
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
@@ -44,8 +45,8 @@ const state = {
   twilioAudioPackets: 0,
   elevenLabsRequests: 0,
   elevenLabsErrors: 0,
-  geminiRequests: 0,
-  geminiErrors: 0,
+  groqRequests: 0,
+  groqErrors: 0,
 };
 
 function json(res, statusCode, data) {
@@ -66,8 +67,9 @@ logEvent({
   elevenlabs_api_key_configured: Boolean(ELEVENLABS_API_KEY),
   elevenlabs_voice_id_configured: Boolean(ELEVENLABS_VOICE_ID),
   elevenlabs_model_id: ELEVENLABS_MODEL_ID,
-  gemini_api_key_configured: Boolean(GEMINI_API_KEY),
-  gemini_model: GEMINI_MODEL,
+  groq_api_key_configured: Boolean(GROQ_API_KEY),
+  groq_model: GROQ_MODEL,
+  groq_stt_model: GROQ_STT_MODEL,
 });
 
 const MULAW_BIAS = 0x84;
@@ -192,36 +194,42 @@ async function extractImportantMemory(transcript) {
   const text = transcript.trim();
   if (!text) return null;
 
-  if (!GEMINI_API_KEY) return null;
+  if (!GROQ_API_KEY) return null;
 
   try {
-    state.geminiRequests += 1;
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+    state.groqRequests += 1;
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: `Bearer ${GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual." }],
-        },
-        contents: [
+        model: GROQ_MODEL,
+        temperature: 0.2,
+        max_completion_tokens: 400,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "Extract only durable, non-sensitive call memory. Return strict JSON with keys summary and memory_chunk. The memory_chunk should be null if nothing important was said. Use chunk_type one of caller_profile, follow_up, preference, task, call_memory. Exclude secrets, health details, payment details, or private identifiers unless they are explicitly needed for follow-up. Keep content short and factual.",
+          },
           {
             role: "user",
-            parts: [{ text: `Transcript:\n${text}` }],
+            content: `Transcript:\n${text}`,
           },
         ],
-        generationConfig: { responseMimeType: "application/json" },
       }),
     });
 
     if (!response.ok) {
-      state.geminiErrors += 1;
+      state.groqErrors += 1;
       return null;
     }
 
     const payload = await response.json();
-    const content = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("");
+    const content = payload?.choices?.[0]?.message?.content?.trim();
     if (!content) return null;
 
     const parsed = JSON.parse(content);
@@ -231,7 +239,7 @@ async function extractImportantMemory(transcript) {
       memoryChunk: memoryChunk && memoryChunk.content ? { ...memoryChunk, symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [] } : null,
     };
   } catch {
-    state.geminiErrors += 1;
+    state.groqErrors += 1;
     const fallback = buildFallbackMemoryChunk(text);
     return {
       summary: text.slice(0, 500),
@@ -240,79 +248,73 @@ async function extractImportantMemory(transcript) {
   }
 }
 
-async function transcribeAudioWithGemini(audioWavBase64, language) {
-  if (!GEMINI_API_KEY || !audioWavBase64) return "";
+async function transcribeAudioWithGroq(audioWavBase64, language) {
+  if (!GROQ_API_KEY || !audioWavBase64) return "";
 
   try {
-    state.geminiRequests += 1;
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+    state.groqRequests += 1;
+    const audioBuffer = Buffer.from(audioWavBase64, "base64");
+    const form = new FormData();
+    form.append("model", GROQ_STT_MODEL);
+    form.append("file", new Blob([audioBuffer], { type: "audio/wav" }), "audio.wav");
+    if (language === "hi") form.append("language", "hi");
+
+    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: `Transcribe the caller audio exactly. Return only the transcript text in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Do not add commentary.` }],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: "Audio to transcribe:" },
-              {
-                inline_data: {
-                  mime_type: "audio/wav",
-                  data: audioWavBase64,
-                },
-              },
-            ],
-          },
-        ],
-      }),
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: form,
     });
 
     if (!response.ok) {
-      state.geminiErrors += 1;
+      state.groqErrors += 1;
       return "";
     }
 
     const payload = await response.json();
-    return (payload?.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("").trim();
+    return (payload?.text || "").trim();
   } catch (error) {
-    state.geminiErrors += 1;
-    logEvent({ type: "gemini.error", error: error.message, stage: "transcribe" });
+    state.groqErrors += 1;
+    logEvent({ type: "groq.error", error: error.message, stage: "transcribe" });
     return "";
   }
 }
 
 async function generateFallbackReply(turns, language, systemPrompt = "") {
   const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
-  if (!GEMINI_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
+  if (!GROQ_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
 
   try {
-    state.geminiRequests += 1;
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+    state.groqRequests += 1;
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: `Bearer ${GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.` }],
-        },
-        contents: turns.map((turn) => ({ role: turn.role === "assistant" ? "model" : "user", parts: [{ text: turn.content }] })),
+        model: GROQ_MODEL,
+        temperature: 0.3,
+        max_completion_tokens: 300,
+        reasoning_effort: "low",
+        messages: [
+          {
+            role: "system",
+            content: `${systemPrompt ? `${systemPrompt}\n` : ""}You are a warm calling assistant. Speak in ${language === "hi" ? "Hindi" : language === "hinglish" ? "Hinglish" : "English"}. Keep it short and ask one simple question at a time. If this is the first reply after the greeting, ask for the caller's name. Avoid sensitive details.`,
+          },
+          ...turns.map((turn) => ({ role: turn.role === "assistant" ? "assistant" : "user", content: turn.content })),
+        ],
       }),
     });
 
     if (!response.ok) {
-      state.geminiErrors += 1;
+      state.groqErrors += 1;
       return "Sorry, I didn’t catch that. What name should I use for you?";
     }
 
     const payload = await response.json();
-    return payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim() || "Sorry, I didn’t catch that. What name should I use for you?";
+    return payload?.choices?.[0]?.message?.content?.trim() || "Sorry, I didn’t catch that. What name should I use for you?";
   } catch {
-    state.geminiErrors += 1;
+    state.groqErrors += 1;
     return "Sorry, I didn’t catch that. What name should I use for you?";
   }
 }
@@ -488,8 +490,8 @@ const server = http.createServer((req, res) => {
       twilioAudioPackets: state.twilioAudioPackets,
       elevenLabsRequests: state.elevenLabsRequests,
       elevenLabsErrors: state.elevenLabsErrors,
-      geminiRequests: state.geminiRequests,
-      geminiErrors: state.geminiErrors,
+      groqRequests: state.groqRequests,
+      groqErrors: state.groqErrors,
       uptimeSeconds: Math.floor((Date.now() - state.startedAt) / 1000),
     });
   }
@@ -588,7 +590,7 @@ wss.on("connection", async (twilioWs, req) => {
     turnQueued = false;
 
     try {
-      const transcript = await transcribeAudioWithGemini(twilioMulawToWavBase64(packets), conversationLanguage);
+      const transcript = await transcribeAudioWithGroq(twilioMulawToWavBase64(packets), conversationLanguage);
       if (transcript) {
         userTranscript = `${userTranscript} ${transcript}`.trim();
         conversationLanguage = detectLanguageMode(transcript) || conversationLanguage;
@@ -599,7 +601,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "user",
           content: transcript,
           language: conversationLanguage,
-          source: "gemini",
+          source: "groq",
         });
 
         const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
@@ -611,7 +613,7 @@ wss.on("connection", async (twilioWs, req) => {
           role: "assistant",
           content: reply,
           language: conversationLanguage,
-          source: "gemini",
+          source: "groq",
         });
 
         const elevenLabsAudio = await synthesizeWithElevenLabs(reply, conversationLanguage).catch((error) => {

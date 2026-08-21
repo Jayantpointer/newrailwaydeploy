@@ -97,8 +97,8 @@ enabled = true
 port = 54323
 # External URL of the API server that frontend connects to.
 api_url = "http://127.0.0.1"
-# Gemini API Key to use for Supabase AI in the Supabase Studio.
-gemini_api_key = "env(GEMINI_API_KEY)"
+# Groq API Key to use for Supabase AI in the Supabase Studio.
+groq_api_key = "env(GROQ_API_KEY)"
 
 # Email testing server. Emails sent with the local dev setup are not actually sent - rather, they
 # are monitored, and you can view the emails that would have been sent from the web interface.
@@ -150,7 +150,7 @@ max_buckets = 10
 max_indexes = 5
 
 # Vector Buckets is available to Supabase Pro plan.
-# [storage.vector.buckets.documents-gemini]
+# [storage.vector.buckets.documents-groq]
 
 [auth]
 enabled = true

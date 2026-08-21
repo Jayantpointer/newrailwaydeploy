@@ -48,8 +48,9 @@ Notes:
 
 Bridge env vars:
 
-- `GEMINI_API_KEY`
-- `GEMINI_MODEL=gemini-2.5-flash`
+- `GROQ_API_KEY`
+- `GROQ_MODEL=openai/gpt-oss-120b`
+- `GROQ_STT_MODEL=whisper-large-v3-turbo`
 - `ELEVENLABS_API_KEY`
 - `ELEVENLABS_VOICE_ID`
 - `ELEVENLABS_MODEL_ID=eleven_multilingual_v2`

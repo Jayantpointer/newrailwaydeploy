@@ -35,8 +35,8 @@ const corsHeaders = {
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
-const geminiModel = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash";
-const geminiApiKey = Deno.env.get("GEMINI_API_KEY") ?? "";
+const groqModel = Deno.env.get("GROQ_MODEL") ?? "openai/gpt-oss-120b";
+const groqApiKey = Deno.env.get("GROQ_API_KEY") ?? "";
 const elevenLabsVoiceId = Deno.env.get("ELEVENLABS_VOICE_ID") ?? "";
 const elevenLabsApiKey = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 
@@ -223,9 +223,9 @@ Deno.serve(async (req) => {
       session_id: sessionId,
       caller_id: callerId,
       brain: {
-        model: geminiModel,
+        model: groqModel,
         system_prompt: settings?.system_prompt ?? "",
-        api_key_configured: Boolean(geminiApiKey),
+        api_key_configured: Boolean(groqApiKey),
       },
       voice: {
         provider: "elevenlabs",
