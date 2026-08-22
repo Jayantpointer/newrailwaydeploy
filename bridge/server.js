@@ -22,6 +22,7 @@ const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID", "shreya");
 const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech");
 const SARVAM_LANGUAGE = envText("SARVAM_LANGUAGE", "auto");
 const SARVAM_TTS_PACE = Number(process.env.SARVAM_TTS_PACE || 0.88);
+const SARVAM_TTS_GAIN = Number(process.env.SARVAM_TTS_GAIN || 1.2);
 const FINAL_TRANSCRIPT_FLUSH_DELAY_MS = Number(process.env.FINAL_TRANSCRIPT_FLUSH_DELAY_MS || 1200);
 const SARVAM_SILENCE_DURATION_MS = Number(process.env.SARVAM_SILENCE_DURATION_MS || 450);
 const SARVAM_MIN_SPEECH_DURATION_MS = Number(process.env.SARVAM_MIN_SPEECH_DURATION_MS || 160);
@@ -327,6 +328,56 @@ function xmlEscape(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function mulawByteToPcm16(byte) {
+  const MU_LAW_BIAS = 0x84;
+  const u = (~byte) & 0xff;
+  const sign = u & 0x80;
+  const exponent = (u >> 4) & 0x07;
+  const mantissa = u & 0x0f;
+  let sample = ((mantissa << 3) + MU_LAW_BIAS) << exponent;
+  sample -= MU_LAW_BIAS;
+  return sign ? -sample : sample;
+}
+
+function pcm16ToMulawByte(sample) {
+  const MU_LAW_BIAS = 0x84;
+  const MU_LAW_CLIP = 32635;
+  let sign = 0;
+  let value = sample;
+
+  if (value < 0) {
+    sign = 0x80;
+    value = -value;
+  }
+
+  if (value > MU_LAW_CLIP) value = MU_LAW_CLIP;
+  value += MU_LAW_BIAS;
+
+  let exponent = 7;
+  for (let mask = 0x4000; exponent > 0 && (value & mask) === 0; exponent -= 1, mask >>= 1) {
+    // find segment
+  }
+
+  const mantissa = (value >> (exponent + 3)) & 0x0f;
+  return (~(sign | (exponent << 4) | mantissa)) & 0xff;
+}
+
+function boostMulawBase64(audioBase64, gain = 1) {
+  if (!audioBase64 || gain === 1) return audioBase64;
+
+  const input = Buffer.from(audioBase64, "base64");
+  if (!input.length) return audioBase64;
+
+  const output = Buffer.allocUnsafe(input.length);
+  for (let i = 0; i < input.length; i += 1) {
+    const pcm = mulawByteToPcm16(input[i]);
+    const boosted = Math.max(-32768, Math.min(32767, Math.round(pcm * gain)));
+    output[i] = pcm16ToMulawByte(boosted);
+  }
+
+  return output.toString("base64");
 }
 
 function detectLanguageMode(text, hintedLanguage = "") {
@@ -755,13 +806,14 @@ async function synthesizeWithSarvam(text, languageHint = "") {
 
 async function sendAudioToTwilio(twilioWs, streamSid, text, languageHint = "") {
   const audioBase64 = await synthesizeWithSarvam(text, languageHint);
-  if (audioBase64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+  const boostedAudioBase64 = boostMulawBase64(audioBase64, SARVAM_TTS_GAIN);
+  if (boostedAudioBase64 && streamSid && twilioWs.readyState === WebSocket.OPEN) {
     state.twilioAudioPackets += 1;
     logEvent({ type: "audio.sent", source: "sarvam", stream_sid: streamSid });
     twilioWs.send(JSON.stringify({
       event: "media",
       streamSid,
-      media: { payload: audioBase64 },
+      media: { payload: boostedAudioBase64 },
     }));
   }
 }
