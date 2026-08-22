@@ -55,25 +55,29 @@ async function resolveCallerRecord(ownerId: string | null, phoneE164: string, na
   const normalizedPhone = normalizeText(phoneE164);
   const normalizedName = normalizeText(name);
 
-  if (!normalizedPhone) return null;
+  if (!normalizedPhone && !normalizedName) return null;
 
-  const phoneQuery = ownerId
-    ? admin.from("callers").select("id, full_name").eq("owner_id", ownerId).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2)
-    : admin.from("callers").select("id, full_name").is("owner_id", null).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2);
+  let phoneMatches: Array<{ id: string; full_name?: string | null }> = [];
+  if (normalizedPhone) {
+    const phoneQuery = ownerId
+      ? admin.from("callers").select("id, full_name").eq("owner_id", ownerId).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2)
+      : admin.from("callers").select("id, full_name").is("owner_id", null).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2);
 
-  const { data: phoneMatches, error: phoneError } = await phoneQuery;
-  if (phoneError) throw phoneError;
+    const { data, error: phoneError } = await phoneQuery;
+    if (phoneError) throw phoneError;
+    phoneMatches = Array.isArray(data) ? data : [];
+  }
 
   if (normalizedName && Array.isArray(phoneMatches) && phoneMatches.length) {
     const exact = phoneMatches.find((caller) => normalizeText(caller.full_name).toLowerCase() === normalizedName.toLowerCase());
     if (exact?.id) return exact.id as string;
 
-    const { data: createdCaller, error: createError } = await admin
-      .from("callers")
-      .insert({
-        owner_id: ownerId,
-        phone_e164: normalizedPhone,
-        full_name: normalizedName,
+  const { data: createdCaller, error: createError } = await admin
+    .from("callers")
+    .insert({
+      owner_id: ownerId,
+      phone_e164: normalizedPhone || null,
+      full_name: normalizedName,
       })
       .select("id")
       .single();

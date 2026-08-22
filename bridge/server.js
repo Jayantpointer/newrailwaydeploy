@@ -1019,13 +1019,13 @@ wss.on("connection", async (twilioWs, req) => {
   async function createCallerProfile(fullName) {
     const client = getSupabase();
     const normalizedName = normalizeCallerName(fullName);
-    if (!client || !streamPhoneE164) return null;
+    if (!client) return null;
 
     const { data, error } = await client
       .from("callers")
       .insert({
-        owner_id: ownerId || null,
-        phone_e164: streamPhoneE164,
+        owner_id: resolvedSession.owner_id || null,
+        phone_e164: streamPhoneE164 || null,
         full_name: normalizedName || null,
         preferred_language: SARVAM_STT_LANGUAGE === "auto" ? "en" : SARVAM_STT_LANGUAGE,
         metadata: { source: "auto_call_start", session_id: resolvedSession.id || null },
@@ -1050,8 +1050,8 @@ wss.on("connection", async (twilioWs, req) => {
   }
 
   async function ensureAutoCallerProfile() {
-    if (resolvedSession.caller_id || !phoneE164) return resolvedSession.caller_id || null;
-    const caller = await createCallerProfile(fullName || "");
+    if (resolvedSession.caller_id) return resolvedSession.caller_id;
+    const caller = await createCallerProfile(streamFullName || "");
     if (caller?.id) {
       await linkCallerProfile(caller);
       return caller.id;

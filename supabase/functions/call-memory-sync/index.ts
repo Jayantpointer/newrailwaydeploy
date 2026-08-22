@@ -126,25 +126,34 @@ async function resolveCallerId(payload: MemorySyncPayload, ownerId: string | nul
       if (Array.isArray(nameMatches) && nameMatches.length === 1) return nameMatches[0].id as string;
     }
 
-    if (normalizedName) {
-      const { data: createdCaller, error: createError } = await admin
-        .from("callers")
-        .insert({
-          owner_id: ownerId,
-          phone_e164: phoneE164,
-          full_name: normalizedName,
-          preferred_language: detectLanguageMode(payload.transcript || payload.summary || normalizedName),
-          metadata: { source: "transcript_sync", language: detectLanguageMode(payload.transcript || payload.summary || normalizedName) },
-        })
-        .select("id")
-        .single();
-
-      if (createError) throw createError;
-      return createdCaller?.id ?? null;
-    }
   }
 
-  return null;
+  if (!normalizedName) return null;
+
+  const nameQuery = ownerId
+    ? admin.from("callers").select("id, full_name, phone_e164").eq("owner_id", ownerId).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2)
+    : admin.from("callers").select("id, full_name, phone_e164").is("owner_id", null).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2);
+
+  const { data: nameMatches, error: nameError } = await nameQuery;
+  if (nameError) throw nameError;
+  if (Array.isArray(nameMatches) && nameMatches.length === 1) {
+    return nameMatches[0].id as string;
+  }
+
+  const { data: createdCaller, error: createError } = await admin
+    .from("callers")
+    .insert({
+      owner_id: ownerId,
+      phone_e164: phoneE164 || null,
+      full_name: normalizedName,
+      preferred_language: detectLanguageMode(payload.transcript || payload.summary || normalizedName),
+      metadata: { source: "transcript_sync", language: detectLanguageMode(payload.transcript || payload.summary || normalizedName) },
+    })
+    .select("id")
+    .single();
+
+  if (createError) throw createError;
+  return createdCaller?.id ?? null;
 }
 
 async function saveMemoryChunk(payload: MemorySyncPayload, ownerId: string | null, callerId: string | null, language: string) {
