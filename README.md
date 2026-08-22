@@ -67,6 +67,7 @@ Bridge env vars:
 - `SARVAM_LANGUAGE=auto` to follow the caller's detected language
 - `SARVAM_TTS_PACE=0.88`
 - `SARVAM_TTS_GAIN=1.2`
+- `SAATHI_TIME_ZONE=Asia/Kolkata`
 - `SARVAM_SILENCE_DURATION_MS=650`
 - `SARVAM_MIN_SPEECH_DURATION_MS=220`
 - `FINAL_TRANSCRIPT_FLUSH_DELAY_MS=1900`
@@ -77,5 +78,6 @@ Bridge env vars:
 When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs the reply model to answer in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. `SARVAM_TTS_PACE` controls how fast the assistant speaks. `SARVAM_TTS_GAIN` boosts the spoken volume after synthesis. Memory extraction uses Anthropic Claude Sonnet directly so names, symptoms, activities, and interests are captured more reliably. Live replies use `claude-haiku-4-5-20251001` for lower latency.
 The live voice prompt also enforces a short engagement policy: open warmly, ask sparingly, use one relevant memory at a time, respect pauses and busy signals, and close cleanly when the caller wants to stop.
 Caller identity is name-based: callers with the same normalized full name and owner share history, while different names can share the same phone number without being merged. Calls remain unassigned until a name is captured when no trusted caller ID is supplied.
+After the caller gives their name, the bridge asks a time-of-day routine question and follows the answer naturally.
 
 Run locally with `npm install` then `npm start`.

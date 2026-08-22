@@ -23,6 +23,7 @@ const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-
 const SARVAM_LANGUAGE = envText("SARVAM_LANGUAGE", "auto");
 const SARVAM_TTS_PACE = Number(process.env.SARVAM_TTS_PACE || 0.88);
 const SARVAM_TTS_GAIN = Number(process.env.SARVAM_TTS_GAIN || 1.2);
+const SAATHI_TIME_ZONE = envText("SAATHI_TIME_ZONE", "Asia/Kolkata");
 const FINAL_TRANSCRIPT_FLUSH_DELAY_MS = Number(process.env.FINAL_TRANSCRIPT_FLUSH_DELAY_MS || 1200);
 const SARVAM_SILENCE_DURATION_MS = Number(process.env.SARVAM_SILENCE_DURATION_MS || 450);
 const SARVAM_MIN_SPEECH_DURATION_MS = Number(process.env.SARVAM_MIN_SPEECH_DURATION_MS || 160);
@@ -81,6 +82,8 @@ MEMORY CONSISTENCY
 ENGAGEMENT FLOW
 - Optimize for comfort, trust, and voluntary return, not for keeping the call long.
 - Start with one warm open-ended opening, not a questionnaire.
+- After learning the caller's name, begin with one gentle time-of-day routine question: breakfast in the morning, lunch around midday, tea or a light snack in the afternoon, and dinner in the evening.
+- Follow the answer instead of restarting the script. If they ate, ask how it was or what they had. If they have not eaten, ask gently whether they are not hungry or what happened, without sounding like a health checklist.
 - When the caller gives a meaningful answer, usually ask one important follow-up in the next turn.
 - Keep follow-ups focused: ask about the detail, feeling, person, reason, or outcome most likely to continue the caller's topic.
 - Do not move to a new topic while a useful thread is still open.
@@ -340,6 +343,21 @@ function xmlEscape(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function timeAwareMealQuestion(language = "") {
+  const hour = Number(new Intl.DateTimeFormat("en-US", {
+    timeZone: SAATHI_TIME_ZONE,
+    hour: "2-digit",
+    hour12: false,
+  }).format(new Date()));
+  const isHindi = language === "hi" || language === "hinglish";
+
+  if (hour >= 5 && hour < 11) return isHindi ? "Nashta kar liya?" : "Have you had your breakfast?";
+  if (hour >= 11 && hour < 16) return isHindi ? "Dopahar ka khana kha liya?" : "Have you had your lunch?";
+  if (hour >= 16 && hour < 19) return isHindi ? "Shaam ki chai ya kuch halka sa liya?" : "Have you had tea or something light this afternoon?";
+  if (hour >= 19 && hour < 23) return isHindi ? "Raat ka khana kha liya?" : "Have you had your dinner?";
+  return isHindi ? "Kuch kha liya, ya sone ki taiyaari hai?" : "Have you had something to eat, or are you getting ready to sleep?";
 }
 
 function mulawByteToPcm16(byte) {
@@ -1413,7 +1431,7 @@ wss.on("connection", async (twilioWs, req) => {
       if (isAffirmativeReply(cleanTranscript)) {
         await linkCallerProfile(candidate);
         await loadElderContextForCaller(candidate.id).catch((error) => logEvent({ type: "elder.context.error", elder_id: candidate.id, error: error.message }));
-        await deliverAssistantReply(`Okay. I’ll use ${candidate.full_name || proposedName} from here.`, "elder_match");
+        await deliverAssistantReply(`Okay. I’ll use ${candidate.full_name || proposedName} from here. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_match");
         return;
       }
 
@@ -1421,7 +1439,7 @@ wss.on("connection", async (twilioWs, req) => {
         if (candidate.phone_e164 && phoneE164 && candidate.phone_e164 === phoneE164) {
           await linkCallerProfile(candidate);
           await loadElderContextForCaller(candidate.id).catch((error) => logEvent({ type: "elder.context.error", elder_id: candidate.id, error: error.message }));
-          await deliverAssistantReply(`Okay. I’ll keep the existing profile for ${candidate.full_name || proposedName}.`, "elder_match_same_phone");
+          await deliverAssistantReply(`Okay. I’ll keep the existing profile for ${candidate.full_name || proposedName}. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_match_same_phone");
           return;
         }
 
@@ -1430,7 +1448,7 @@ wss.on("connection", async (twilioWs, req) => {
           await linkCallerProfile(newCaller);
           elderContextCallerId = "";
           elderContext = "";
-          await deliverAssistantReply(`Okay. I made a new profile for ${proposedName}.`, "elder_new");
+          await deliverAssistantReply(`Okay. I made a new profile for ${proposedName}. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_new");
           return;
         }
       }
@@ -1456,7 +1474,7 @@ wss.on("connection", async (twilioWs, req) => {
           await linkCallerProfile(newCaller);
           elderContextCallerId = "";
           elderContext = "";
-          await deliverAssistantReply(`Thanks, ${callerName}.`, "elder_new_prompt");
+          await deliverAssistantReply(`Thanks, ${callerName}. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_new_prompt");
           return;
         }
       }
