@@ -32,9 +32,15 @@ create table public.callers (
   symptoms text[] not null default '{}'::text[],
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint callers_owner_phone_unique unique (owner_id, phone_e164)
+  updated_at timestamptz not null default now()
 );
+
+create unique index callers_owner_full_name_unique
+on public.callers (
+  coalesce(owner_id, '00000000-0000-0000-0000-000000000000'::uuid),
+  lower(regexp_replace(btrim(full_name), '\s+', ' ', 'g'))
+)
+where full_name is not null and btrim(full_name) <> '';
 
 create table public.call_sessions (
   id uuid primary key default gen_random_uuid(),

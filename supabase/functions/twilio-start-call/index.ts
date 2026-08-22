@@ -31,55 +31,6 @@ const admin = createClient(supabaseUrl, serviceRoleKey, {
   },
 });
 
-function normalizeText(value: unknown) {
-  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
-}
-
-async function resolveCallerRecord(ownerId: string | null, phoneE164: string, name: string) {
-  const normalizedPhone = normalizeText(phoneE164);
-  const normalizedName = normalizeText(name);
-  if (!normalizedPhone) return null;
-
-  const phoneQuery = ownerId
-    ? admin.from("callers").select("id, full_name").eq("owner_id", ownerId).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2)
-    : admin.from("callers").select("id, full_name").is("owner_id", null).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2);
-
-  const { data: phoneMatches, error: phoneError } = await phoneQuery;
-  if (phoneError) throw phoneError;
-
-  if (normalizedName && Array.isArray(phoneMatches) && phoneMatches.length) {
-    const exactMatch = phoneMatches.find((caller) => normalizeText(caller.full_name).toLowerCase() === normalizedName.toLowerCase());
-    if (exactMatch?.id) return exactMatch.id as string;
-  }
-
-  if (!normalizedName && Array.isArray(phoneMatches) && phoneMatches.length === 1) {
-    return phoneMatches[0].id as string;
-  }
-
-  if (normalizedName) {
-    const nameQuery = ownerId
-      ? admin.from("callers").select("id").eq("owner_id", ownerId).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2)
-      : admin.from("callers").select("id").is("owner_id", null).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2);
-
-    const { data: nameMatches, error: nameError } = await nameQuery;
-    if (nameError) throw nameError;
-    if (Array.isArray(nameMatches) && nameMatches.length === 1) return nameMatches[0].id as string;
-  }
-
-  const { data: createdCaller, error: createError } = await admin
-    .from("callers")
-    .insert({
-      owner_id: ownerId,
-      phone_e164: normalizedPhone,
-      full_name: normalizedName || null,
-    })
-    .select("id")
-    .single();
-
-  if (createError) throw createError;
-  return createdCaller?.id ?? null;
-}
-
 function basicAuthHeader(accountSid: string, authToken: string) {
   return `Basic ${btoa(`${accountSid}:${authToken}`)}`;
 }
@@ -112,7 +63,7 @@ Deno.serve(async (req) => {
     }
 
     let sessionId = body.session_id ?? null;
-  const callerId = body.caller_id ?? null;
+    const callerId = null;
 
     if (!sessionId) {
       const { data: session, error: sessionError } = await admin

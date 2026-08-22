@@ -101,38 +101,11 @@ async function resolveCallerId(payload: MemorySyncPayload, ownerId: string | nul
 
   if (suppliedCallerId) return suppliedCallerId;
 
-  if (phoneE164) {
-    const phoneQuery = ownerId
-      ? admin.from("callers").select("id, full_name").eq("owner_id", ownerId).eq("phone_e164", phoneE164).order("updated_at", { ascending: false }).limit(2)
-      : admin.from("callers").select("id, full_name").is("owner_id", null).eq("phone_e164", phoneE164).order("updated_at", { ascending: false }).limit(2);
-
-    const { data: existingByPhone, error: phoneError } = await phoneQuery;
-    if (phoneError) throw phoneError;
-
-    if (normalizedName && Array.isArray(existingByPhone) && existingByPhone.length) {
-      const exactMatch = existingByPhone.find((caller) => normalizeText(caller.full_name).toLowerCase() === normalizedName.toLowerCase());
-      if (exactMatch?.id) return exactMatch.id as string;
-    }
-
-    if (!normalizedName && Array.isArray(existingByPhone) && existingByPhone.length === 1) return existingByPhone[0].id as string;
-
-    if (normalizedName) {
-      const nameQuery = ownerId
-        ? admin.from("callers").select("id").eq("owner_id", ownerId).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2)
-        : admin.from("callers").select("id").is("owner_id", null).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2);
-
-      const { data: nameMatches, error: nameError } = await nameQuery;
-      if (nameError) throw nameError;
-      if (Array.isArray(nameMatches) && nameMatches.length === 1) return nameMatches[0].id as string;
-    }
-
-  }
-
   if (!normalizedName) return null;
 
   const nameQuery = ownerId
-    ? admin.from("callers").select("id, full_name, phone_e164").eq("owner_id", ownerId).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2)
-    : admin.from("callers").select("id, full_name, phone_e164").is("owner_id", null).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2);
+    ? admin.from("callers").select("id, full_name, phone_e164").eq("owner_id", ownerId).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(1)
+    : admin.from("callers").select("id, full_name, phone_e164").is("owner_id", null).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(1);
 
   const { data: nameMatches, error: nameError } = await nameQuery;
   if (nameError) throw nameError;

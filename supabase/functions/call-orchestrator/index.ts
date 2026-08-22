@@ -55,22 +55,15 @@ async function resolveCallerRecord(ownerId: string | null, phoneE164: string, na
   const normalizedPhone = normalizeText(phoneE164);
   const normalizedName = normalizeText(name);
 
-  if (!normalizedPhone && !normalizedName) return null;
+  if (!normalizedName) return null;
 
-  let phoneMatches: Array<{ id: string; full_name?: string | null }> = [];
-  if (normalizedPhone) {
-    const phoneQuery = ownerId
-      ? admin.from("callers").select("id, full_name").eq("owner_id", ownerId).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2)
-      : admin.from("callers").select("id, full_name").is("owner_id", null).eq("phone_e164", normalizedPhone).order("updated_at", { ascending: false }).limit(2);
+  const nameQuery = ownerId
+    ? admin.from("callers").select("id, full_name").eq("owner_id", ownerId).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(1)
+    : admin.from("callers").select("id, full_name").is("owner_id", null).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(1);
 
-    const { data, error: phoneError } = await phoneQuery;
-    if (phoneError) throw phoneError;
-    phoneMatches = Array.isArray(data) ? data : [];
-  }
-
-  if (normalizedName && Array.isArray(phoneMatches) && phoneMatches.length) {
-    const exact = phoneMatches.find((caller) => normalizeText(caller.full_name).toLowerCase() === normalizedName.toLowerCase());
-    if (exact?.id) return exact.id as string;
+  const { data: nameMatches, error: nameError } = await nameQuery;
+  if (nameError) throw nameError;
+  if (Array.isArray(nameMatches) && nameMatches.length === 1) return nameMatches[0].id as string;
 
   const { data: createdCaller, error: createError } = await admin
     .from("callers")
@@ -78,42 +71,12 @@ async function resolveCallerRecord(ownerId: string | null, phoneE164: string, na
       owner_id: ownerId,
       phone_e164: normalizedPhone || null,
       full_name: normalizedName,
-      })
-      .select("id")
-      .single();
+    })
+    .select("id")
+    .single();
 
-    if (createError) throw createError;
-    return createdCaller?.id ?? null;
-  }
-
-  if (Array.isArray(phoneMatches) && phoneMatches.length === 1) {
-    return phoneMatches[0].id as string;
-  }
-
-  if (normalizedName) {
-    const nameQuery = ownerId
-      ? admin.from("callers").select("id, full_name").eq("owner_id", ownerId).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2)
-      : admin.from("callers").select("id, full_name").is("owner_id", null).ilike("full_name", normalizedName).order("updated_at", { ascending: false }).limit(2);
-
-    const { data: nameMatches, error: nameError } = await nameQuery;
-    if (nameError) throw nameError;
-    if (Array.isArray(nameMatches) && nameMatches.length === 1) return nameMatches[0].id as string;
-
-    const { data: createdCaller, error: createError } = await admin
-      .from("callers")
-      .insert({
-        owner_id: ownerId,
-        phone_e164: normalizedPhone,
-        full_name: normalizedName,
-      })
-      .select("id")
-      .single();
-
-    if (createError) throw createError;
-    return createdCaller?.id ?? null;
-  }
-
-  return null;
+  if (createError) throw createError;
+  return createdCaller?.id ?? null;
 }
 
 async function persistMemoryChunk(params: {

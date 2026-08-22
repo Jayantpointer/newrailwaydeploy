@@ -1429,7 +1429,7 @@ wss.on("connection", async (twilioWs, req) => {
     }
 
     if (!resolvedSession.caller_id) {
-      const callerName = extractCallerNameCandidate(cleanTranscript) || normalizeCallerName(fullName);
+      const callerName = extractCallerNameCandidate(cleanTranscript);
       if (callerName) {
         const existingCaller = await findCallerByName(callerName);
 
