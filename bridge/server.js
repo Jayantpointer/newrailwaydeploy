@@ -196,6 +196,8 @@ const state = {
   sarvamErrors: 0,
   openrouterRequests: 0,
   openrouterErrors: 0,
+  anthropicRequests: 0,
+  anthropicErrors: 0,
   sarvamSttConnections: 0,
   sarvamSttErrors: 0,
   sarvamSttPartials: 0,
@@ -437,7 +439,14 @@ function extractJsonPayload(text) {
 function normalizeMemoryExtractionPayload(payload, transcript) {
   const parsed = payload && typeof payload === "object" ? payload : {};
   const memoryChunk = parsed.memory_chunk && typeof parsed.memory_chunk === "object" ? parsed.memory_chunk : null;
-  const fullName = typeof parsed.full_name === "string" ? parsed.full_name.trim() : "";
+  const nestedFacts = memoryChunk?.facts && typeof memoryChunk.facts === "object" ? memoryChunk.facts : {};
+  const fullName = typeof parsed.full_name === "string"
+    ? parsed.full_name.trim()
+    : typeof nestedFacts.full_name === "string"
+      ? nestedFacts.full_name.trim()
+      : typeof nestedFacts.name === "string"
+        ? nestedFacts.name.trim()
+        : "";
 
   return {
     full_name: fullName,
@@ -493,7 +502,7 @@ async function extractImportantMemory(transcript) {
   if (!ANTHROPIC_API_KEY) return localFallback();
 
   try {
-    state.openrouterRequests += 1;
+    state.anthropicRequests += 1;
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -513,7 +522,7 @@ async function extractImportantMemory(transcript) {
 
     if (!response.ok) {
       const details = await response.text().catch(() => "");
-      state.openrouterErrors += 1;
+      state.anthropicErrors += 1;
       logEvent({ type: "anthropic.error", status: response.status, statusText: response.statusText, details });
       return localFallback();
     }
@@ -527,7 +536,7 @@ async function extractImportantMemory(transcript) {
     const parsed = JSON.parse(extractJsonPayload(content) || content);
     return normalizeMemoryExtractionPayload(parsed, text);
   } catch (error) {
-    state.openrouterErrors += 1;
+    state.anthropicErrors += 1;
     logEvent({ type: "anthropic.error", error: error.message, stage: "parse" });
     return localFallback();
   }
@@ -784,6 +793,8 @@ const server = http.createServer((req, res) => {
       sarvamErrors: state.sarvamErrors,
       openrouterRequests: state.openrouterRequests,
       openrouterErrors: state.openrouterErrors,
+      anthropicRequests: state.anthropicRequests,
+      anthropicErrors: state.anthropicErrors,
       sarvamSttConnections: state.sarvamSttConnections,
       sarvamSttErrors: state.sarvamSttErrors,
       sarvamSttPartials: state.sarvamSttPartials,
@@ -871,6 +882,9 @@ wss.on("connection", async (twilioWs, req) => {
   let sarvamSttEndResolve = null;
   const pendingSarvamAudio = [];
   const pendingTranscripts = [];
+  const bufferedFinalTranscripts = [];
+  let bufferedFinalTranscriptLanguage = conversationLanguage;
+  let bufferedFinalTranscriptTimer = null;
   let pendingCallerMatch = null;
   let turnProcessing = false;
   let callStopping = false;
@@ -901,6 +915,29 @@ wss.on("connection", async (twilioWs, req) => {
     const resolve = sarvamSttEndResolve;
     sarvamSttEndResolve = null;
     resolve();
+  }
+
+  function clearBufferedFinalTranscriptTimer() {
+    if (bufferedFinalTranscriptTimer) {
+      clearTimeout(bufferedFinalTranscriptTimer);
+      bufferedFinalTranscriptTimer = null;
+    }
+  }
+
+  async function flushBufferedFinalTranscript() {
+    clearBufferedFinalTranscriptTimer();
+    const merged = bufferedFinalTranscripts.splice(0).map((item) => item.transcript).filter(Boolean).join(" ").trim();
+    if (!merged) return;
+    pendingTranscripts.push({ transcript: merged, detectedLanguage: bufferedFinalTranscriptLanguage });
+    void drainTranscriptQueue();
+  }
+
+  function scheduleBufferedFinalTranscriptFlush() {
+    clearBufferedFinalTranscriptTimer();
+    bufferedFinalTranscriptTimer = setTimeout(() => {
+      bufferedFinalTranscriptTimer = null;
+      void flushBufferedFinalTranscript();
+    }, 900);
   }
 
   async function updateSessionCallerId(callerIdValue) {
@@ -1011,12 +1048,14 @@ wss.on("connection", async (twilioWs, req) => {
 
       state.sarvamSttFinals += 1;
       const detectedLanguage = languageModeFromCode(message.language || message.language_code || message.data?.language || message.data?.language_code);
-      pendingTranscripts.push({ transcript, detectedLanguage });
-      void drainTranscriptQueue();
+      bufferedFinalTranscripts.push({ transcript, detectedLanguage });
+      bufferedFinalTranscriptLanguage = detectedLanguage || bufferedFinalTranscriptLanguage;
+      scheduleBufferedFinalTranscriptFlush();
       return;
     }
 
     if (event === "session.end") {
+      void flushBufferedFinalTranscript();
       resolveSarvamSttEnd();
       return;
     }
@@ -1254,6 +1293,7 @@ wss.on("connection", async (twilioWs, req) => {
         if (message.event === "stop") {
           logEvent({ type: "twilio.stop", session_id: resolvedSession.id });
           callStopping = true;
+          await flushBufferedFinalTranscript();
           await stopSarvamStt();
           await waitForTranscriptQueue();
           const client = getSupabase();
@@ -1268,17 +1308,17 @@ wss.on("connection", async (twilioWs, req) => {
               .eq("id", resolvedSession.id);
           }
           const fullTranscript = conversationTurns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
-          const extracted = await extractImportantMemory(fullTranscript);
+          const extracted = await extractImportantMemory(userTranscript || fullTranscript);
 
           await pushTranscriptChunk({
             sessionId: resolvedSession.id,
             ownerId: resolvedSession.owner_id,
             callerId: resolvedSession.caller_id,
-            transcript: fullTranscript || userTranscript,
+            transcript: userTranscript || fullTranscript,
             fullName: extracted?.full_name || fullName,
             phoneE164,
             role: "assistant",
-            summary: extracted?.summary || fullTranscript.slice(0, 500),
+            summary: extracted?.summary || (userTranscript || fullTranscript).slice(0, 500),
             memoryChunk: extracted?.memoryChunk || null,
             metadata: { language: conversationLanguage, extracted_full_name: extracted?.full_name || null, memory_extraction_model: MEMORY_EXTRACTION_MODEL },
             turns: [],
@@ -1302,6 +1342,7 @@ wss.on("connection", async (twilioWs, req) => {
 
   twilioWs.on("close", () => {
     callStopping = true;
+    clearBufferedFinalTranscriptTimer();
     if (sarvamSttWs?.readyState === WebSocket.OPEN) sarvamSttWs.close(1000, "Twilio stream closed");
     state.activeConnections = Math.max(0, state.activeConnections - 1);
     logEvent({ type: "ws.close", session_id: resolvedSession.id });
