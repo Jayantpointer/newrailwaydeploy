@@ -9,8 +9,9 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
 const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
 const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
-const MEMORY_EXTRACTION_MODEL = envText("MEMORY_EXTRACTION_MODEL", "anthropic/claude-3.5-sonnet");
 const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
+const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
+const MEMORY_EXTRACTION_MODEL = envText("MEMORY_EXTRACTION_MODEL", "claude-3-5-sonnet-20240620");
 const SARVAM_API_KEY = envText("SARVAM_API_KEY");
 const SARVAM_STT_URL = envText("SARVAM_STT_URL", "wss://api.sarvam.ai/speech-to-text-realtime/ws");
 const SARVAM_STT_MODEL = envText("SARVAM_STT_MODEL", "saaras:v3-realtime");
@@ -221,6 +222,7 @@ logEvent({
   sarvam_tts_url: SARVAM_TTS_URL,
   openrouter_api_key_configured: Boolean(OPENROUTER_API_KEY),
   openrouter_model: OPENROUTER_MODEL,
+  anthropic_api_key_configured: Boolean(ANTHROPIC_API_KEY),
   memory_extraction_model: MEMORY_EXTRACTION_MODEL,
   sarvam_stt_api_key_configured: Boolean(SARVAM_API_KEY),
   sarvam_stt_url: SARVAM_STT_URL,
@@ -432,6 +434,23 @@ function extractJsonPayload(text) {
   return candidate;
 }
 
+function normalizeMemoryExtractionPayload(payload, transcript) {
+  const parsed = payload && typeof payload === "object" ? payload : {};
+  const memoryChunk = parsed.memory_chunk && typeof parsed.memory_chunk === "object" ? parsed.memory_chunk : null;
+  const fullName = typeof parsed.full_name === "string" ? parsed.full_name.trim() : "";
+
+  return {
+    full_name: fullName,
+    summary: typeof parsed.summary === "string" ? parsed.summary.trim() : String(transcript || "").trim().slice(0, 500),
+    memoryChunk: memoryChunk && memoryChunk.content ? {
+      ...memoryChunk,
+      facts: memoryChunk.facts && typeof memoryChunk.facts === "object" ? memoryChunk.facts : {},
+      tags: Array.isArray(memoryChunk.tags) ? memoryChunk.tags : [],
+      symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [],
+    } : null,
+  };
+}
+
 function extractCallerNameCandidate(text) {
   const sample = normalizeCallerName(text);
   if (!sample) return "";
@@ -462,65 +481,55 @@ async function extractImportantMemory(transcript) {
   const text = transcript.trim();
   if (!text) return null;
 
-  if (!OPENROUTER_API_KEY) return null;
+  const localFallback = () => {
+    const fallback = buildFallbackMemoryChunk(text);
+    return {
+      summary: text.slice(0, 500),
+      full_name: extractCallerNameCandidate(text) || "",
+      memoryChunk: fallback && fallback.importance >= 50 ? fallback : null,
+    };
+  };
+
+  if (!ANTHROPIC_API_KEY) return localFallback();
 
   try {
     state.openrouterRequests += 1;
-    const response = await fetch(`${OPENROUTER_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
         model: MEMORY_EXTRACTION_MODEL,
-        max_tokens: 800,
+        max_tokens: 1000,
         temperature: 0,
-        messages: [
-          {
-            role: "system",
-            content:
-              "Extract structured elder profile data from this phone transcript. Return strict JSON only, with no markdown and no extra text. Use this schema: {\"full_name\": string|null, \"summary\": string, \"memory_chunk\": {\"chunk_type\": one of [\"caller_profile\",\"follow_up\",\"preference\",\"task\",\"call_memory\"], \"content\": string, \"source_text\": string, \"facts\": {\"current_activity\": string|null, \"interests\": string[], \"symptoms\": string[], \"full_name\": string|null}, \"tags\": string[], \"symptoms\": string[], \"importance\": number } | null }. Capture the person's name if it is stated or clearly implied. Capture reported symptoms like leg pain, weakness, fever, cough, confusion, falls, pain, dizziness, or breathing trouble only if explicitly mentioned. Capture current activity and interests only if the caller says them. Keep summary factual and concise. If nothing important is present, set memory_chunk to null and still return a short summary.",
-          },
-          {
-            role: "user",
-            content: `Transcript:\n${text}`,
-          },
-        ],
+        system:
+          "Extract structured elder profile data from this phone transcript. Return strict JSON only, with no markdown and no extra text. Use this schema: {\"full_name\": string|null, \"summary\": string, \"memory_chunk\": {\"chunk_type\": one of [\"caller_profile\",\"follow_up\",\"preference\",\"task\",\"call_memory\"], \"content\": string, \"source_text\": string, \"facts\": {\"current_activity\": string|null, \"interests\": string[], \"symptoms\": string[], \"full_name\": string|null}, \"tags\": string[], \"symptoms\": string[], \"importance\": number } | null }. Capture the person's name if it is stated or clearly implied. Capture reported symptoms like leg pain, weakness, fever, cough, confusion, falls, pain, dizziness, or breathing trouble only if explicitly mentioned. Capture current activity and interests only if the caller says them. Keep summary factual and concise. If nothing important is present, set memory_chunk to null and still return a short summary.",
+        messages: [{ role: "user", content: `Transcript:\n${text}` }],
       }),
     });
 
     if (!response.ok) {
       const details = await response.text().catch(() => "");
       state.openrouterErrors += 1;
-      logEvent({ type: "openrouter.error", status: response.status, statusText: response.statusText, details });
-      return null;
+      logEvent({ type: "anthropic.error", status: response.status, statusText: response.statusText, details });
+      return localFallback();
     }
 
     const payload = await response.json();
-    const content = payload?.choices?.[0]?.message?.content?.trim();
-    if (!content) return null;
+    const content = Array.isArray(payload?.content)
+      ? payload.content.map((part) => (typeof part?.text === "string" ? part.text : "")).join("\n").trim()
+      : String(payload?.content || "").trim();
+    if (!content) return localFallback();
 
     const parsed = JSON.parse(extractJsonPayload(content) || content);
-    const memoryChunk = parsed.memory_chunk || null;
-    return {
-      full_name: typeof parsed.full_name === "string" ? parsed.full_name.trim() : "",
-      summary: typeof parsed.summary === "string" ? parsed.summary : "",
-      memoryChunk: memoryChunk && memoryChunk.content ? {
-        ...memoryChunk,
-        facts: memoryChunk.facts && typeof memoryChunk.facts === "object" ? memoryChunk.facts : {},
-        tags: Array.isArray(memoryChunk.tags) ? memoryChunk.tags : [],
-        symptoms: Array.isArray(memoryChunk.symptoms) ? memoryChunk.symptoms : [],
-      } : null,
-    };
-  } catch {
+    return normalizeMemoryExtractionPayload(parsed, text);
+  } catch (error) {
     state.openrouterErrors += 1;
-    const fallback = buildFallbackMemoryChunk(text);
-    return {
-      summary: text.slice(0, 500),
-      full_name: extractCallerNameCandidate(text) || "",
-      memoryChunk: fallback && fallback.importance >= 75 ? fallback : null,
-    };
+    logEvent({ type: "anthropic.error", error: error.message, stage: "parse" });
+    return localFallback();
   }
 }
 
