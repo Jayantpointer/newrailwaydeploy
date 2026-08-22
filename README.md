@@ -63,6 +63,217 @@ Dost then follows the caller's answer, rather than moving through a fixed checkl
 
 This approach gives routine changes context. A skipped apple may be a one-off. A repeated change can become a useful thread for a later call. Dost is a companion, not a clinician: it does not diagnose, prescribe, or make medical claims.
 
+## FAR AWAY 2026: Challenge Solution
+
+### Challenge
+
+This project addresses **FAR AWAY 2026, Round 2, Challenge #970: User Segmentation: Mismatch Warning**.
+
+The challenge asks for an MVP capability that can:
+
+1. Maintain recorded context about a user.
+2. Compare current behavior with that context.
+3. Warn or respond when the current behavior conflicts with the recorded context.
+4. Handle both a normal case and a realistic exception case.
+
+Dost solves this as a conversational, longitudinal memory problem rather than as a one-time form validation problem. The system does not ask a user to fill out a checklist and then compare two static records. It learns context from ordinary calls, brings relevant context back into later calls, asks a natural verification question, and gives the caller a chance to explain a change.
+
+### The core design decision
+
+The central design decision is to make mismatch detection **active but non-accusatory**.
+
+Instead of waiting for a caller to spontaneously mention that a routine changed, Dost can use a relevant recorded habit as a conversational opening:
+
+```text
+Recorded context:
+  "The caller usually eats one apple every morning."
+
+Active verification:
+  "Aaj subah apple kha liya?"
+
+Current answer:
+  "Nahi, aaj mann nahi tha."
+
+Result:
+  The current behavior differs from the recorded routine.
+  Dost asks a gentle follow-up instead of raising an alarm immediately.
+```
+
+This matters because the same answer can have very different meanings. Skipping an apple once may be normal. Repeatedly losing interest in food, forgetting a routine, or describing a new difficulty may deserve a later family-facing review. The conversation must collect context before it labels a change as meaningful.
+
+### End-to-end implementation
+
+#### 1. Establish the person identity
+
+At the start of a call, Dost asks for the caller's name rather than blindly trusting the phone number as the person's identity.
+
+The current identity rule is:
+
+```text
+same owner + same normalized full name -> same caller_id and history
+same phone + different full name       -> different caller_id and history
+no captured name                       -> caller remains unassigned
+```
+
+Names are normalized for whitespace and case-insensitive matching. Phone numbers remain useful contact metadata, but they are not the primary identity key. This is important for Indian family phones and shared household numbers, where multiple people may use one number.
+
+The database now has a unique name index scoped to the owner. This prevents accidental duplicate profiles for the same named person while allowing different people on the same phone to remain separate.
+
+#### 2. Store only stated context
+
+After a call, the transcript and memory extraction flow identify facts that were actually stated by the caller. The extracted context is stored across the caller profile and `memory_chunks`:
+
+- `callers.full_name`: the normalized identity name
+- `callers.current_activity`: what the caller is doing or recently did
+- `callers.interests`: stated interests and recurring topics
+- `callers.symptoms`: explicitly reported symptoms, not guesses
+- `memory_chunks.content`: the natural-language memory statement
+- `memory_chunks.chunk_type`: profile, preference, follow-up, task, or call memory
+- `memory_chunks.facts`: structured details such as activities, interests, symptoms, and names
+- `memory_chunks.created_at`: chronology for understanding what came first
+- `memory_chunks.importance`: a coarse signal for memory relevance
+
+Claude Sonnet performs structured extraction after the call. The system prompt explicitly instructs it not to invent symptoms, interests, routines, or names. This prevents a model inference from silently becoming a user fact.
+
+#### 3. Load longitudinal context before the next conversation
+
+When a caller is identified, the bridge loads:
+
+1. The caller's profile.
+2. All related memory chunks.
+3. The memory chunks in chronological order.
+4. The profile and memory history into the live system context.
+
+This gives the reply model access to continuity across calls. The model can see that a person previously mentioned an apple routine, a morning walk, a tea preference, a family visit, or an open follow-up thread.
+
+The history is not presented to the caller as a surveillance report. It is used selectively: one relevant memory or routine at a time, in the same conversational style as a family member remembering something they were told earlier.
+
+#### 4. Proactively verify a relevant routine
+
+The first post-name question is selected using local time by default:
+
+- morning: breakfast or a morning routine
+- midday: lunch
+- afternoon: tea or a light snack
+- evening: dinner
+
+The live conversation policy then encourages Dost to continue from the answer. For example:
+
+```text
+Dost: "Have you had your lunch?"
+Caller: "Yes, I had dal and rice."
+Dost: "That sounds comforting. Was it good today?"
+```
+
+The answer itself can also expose a mismatch:
+
+```text
+Dost: "Aaj subah apple kha liya?"
+Caller: "No, I did not want one today."
+Dost: "Hmm, was it that you were not hungry, or did you just feel like something else?"
+```
+
+The follow-up is intentionally important but gentle. It asks for the reason or outcome that best explains the change, rather than firing a list of medical questions.
+
+#### 5. Compare current statements with past memories
+
+The live system prompt contains a dedicated memory-consistency policy:
+
+- saved memories are useful but can be stale
+- relevant conflicts should not be silently ignored
+- the caller should not be accused of contradicting themselves
+- the assistant should ask whether the preference or situation changed
+- the current statement has priority until clarified
+- unrelated or sensitive old memories should not be raised
+
+For a tea preference, the behavior is:
+
+```text
+Past:    "I like sugar in my tea."
+Today:   "I hate sugar in my tea."
+Dost:    "Last time I thought you liked sugar in your tea, but today you said you don't. Has your taste changed?"
+```
+
+This handles both preference drift and routine drift. It also avoids a common failure mode in memory systems: treating old context as more authoritative than what the person is saying now.
+
+#### 6. Continue the conversation instead of stopping at the mismatch
+
+Mismatch detection is useful only if the conversation understands the reason behind the difference. Dost is instructed to:
+
+- ask one meaningful follow-up after a substantive answer
+- ask about the detail, feeling, person, reason, or outcome most likely to clarify the change
+- show energy and specific interest when the caller shares something important
+- use short reactions and backchannels such as “hmm”, “ahh”, “yeah”, and “achha”
+- follow the caller's topic instead of switching to a new checklist item
+- treat a one-off exception as a one-off until a pattern appears
+
+This produces a more useful distinction:
+
+```text
+Routine: eats an apple daily
+Today: skipped the apple because there was no appetite
+Interpretation: one routine deviation; ask gently and monitor context
+
+Routine: eats an apple daily
+Today and several later calls: repeatedly reports no appetite
+Interpretation: repeated change; eligible for a consented family review flow
+```
+
+The second interpretation is a future structured alert layer. The current MVP already provides the memory, active question, context comparison, and conversational clarification needed to build that layer responsibly.
+
+### Normal case
+
+The normal case is a routine confirmation:
+
+```text
+Stored: the caller usually eats an apple after breakfast.
+Question: "Aaj subah apple kha liya?"
+Answer: "Haan, kha liya."
+Follow-up: "Achha, meetha tha?"
+Outcome: the routine is confirmed and the conversation continues naturally.
+```
+
+The system does not create a warning simply because a memory was queried. It records the answer as confirmation and follows the caller's experience.
+
+### Realistic exception case
+
+The realistic exception is an intentional or temporary change:
+
+```text
+Stored: the caller usually eats an apple every morning.
+Question: "Aaj subah apple kha liya?"
+Answer: "Nahi, aaj mann nahi tha."
+Follow-up: "Bhookh nahi thi, ya kuch aur khaane ka mann tha?"
+Outcome: the change is acknowledged, explained if the caller wishes,
+         and not treated as proof of illness or confusion.
+```
+
+Other valid exceptions include travel, fasting, a guest bringing different food, a changed preference, a late wake-up, or simply not wanting the routine that day. Dost gives the caller autonomy to explain, correct the memory, or move on.
+
+### What is implemented versus what follows
+
+Implemented in the MVP:
+
+- persistent caller profiles and chronological memory chunks
+- name-based identity that supports shared phones
+- live memory loading for identified callers
+- time-aware routine questions
+- proactive conversational follow-ups
+- prompt-level comparison of current statements with relevant memories
+- gentle handling of changed preferences and one-off deviations
+- post-call extraction of stated facts and memories
+
+Next structured layer:
+
+- persist each routine check as a typed verification event
+- classify outcomes as confirmed, changed, skipped, unclear, or unable to answer
+- count repeated deviations over a configurable time window
+- calculate a transparent drift score without using call duration as a proxy
+- show a family-facing review card with the evidence and the caller's own words
+- notify a nominated family member only with consent and an explicit threshold
+
+This boundary is deliberate. The MVP demonstrates the mismatch-warning interaction without pretending that one skipped apple or one confused answer is a clinical signal.
+
 ## What We Built
 
 ### Natural voice conversations
@@ -101,7 +312,6 @@ Dost is designed as an ecosystem, not just a call engine.
 
 | Interface | Purpose | Repository |
 | --- | --- | --- |
-| Elder mobile app | A mobile calling experience for the older adult. | [Dost mobile elder app](https://github.com/blankirigaya/elder-app/tree/main/elder-mobile/elders-app) |
 | Family mobile app | A family-facing memory capsule dashboard for shared context and follow-up. | [Dost mobile family app](https://github.com/blankirigaya/elder-app/tree/main/elder-mobile/family-app) |
 | Web demo | Product and family-facing web experience for Dost. | [Dost web demo](https://github.com/Abhishek9639/Call-Me) |
 
@@ -127,7 +337,7 @@ Supabase
     |-- call_turns and call_events
     `-- memory_chunks
     |
-    +--> Elder and family companion interfaces
+    `--> Family companion interfaces
 ```
 
 ## Safety and Trust
