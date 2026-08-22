@@ -755,6 +755,34 @@ async function loadAgentSettings() {
   return data || {};
 }
 
+function buildElderContextBlock(caller, memoryChunks) {
+  const profileLines = [];
+  if (caller?.full_name) profileLines.push(`Name: ${caller.full_name}`);
+  if (caller?.current_activity) profileLines.push(`Current activity: ${caller.current_activity}`);
+  if (Array.isArray(caller?.interests) && caller.interests.length) profileLines.push(`Interests: ${caller.interests.join(", ")}`);
+  if (Array.isArray(caller?.symptoms) && caller.symptoms.length) profileLines.push(`Symptoms: ${caller.symptoms.join(", ")}`);
+  if (caller?.preferred_language) profileLines.push(`Preferred language: ${caller.preferred_language}`);
+
+  const memoryLines = Array.isArray(memoryChunks)
+    ? memoryChunks.map((chunk, index) => {
+        const parts = [];
+        if (chunk.chunk_type) parts.push(chunk.chunk_type);
+        if (chunk.content) parts.push(chunk.content);
+        if (chunk.facts?.current_activity) parts.push(`activity: ${chunk.facts.current_activity}`);
+        if (Array.isArray(chunk.facts?.interests) && chunk.facts.interests.length) parts.push(`interests: ${chunk.facts.interests.join(", ")}`);
+        if (Array.isArray(chunk.facts?.symptoms) && chunk.facts.symptoms.length) parts.push(`symptoms: ${chunk.facts.symptoms.join(", ")}`);
+        return `${index + 1}. ${parts.filter(Boolean).join(" - ")}`;
+      })
+    : [];
+
+  return [
+    "ELDER CONTEXT",
+    profileLines.length ? profileLines.join("\n") : "Name: unknown",
+    "MEMORY CHRONOLOGY",
+    memoryLines.length ? memoryLines.join("\n") : "No prior memory chunks.",
+  ].join("\n");
+}
+
 async function ensureSession({ sessionId, ownerId, callerId, phoneE164, fullName, callSid }) {
   const client = getSupabase();
   if (!client) {
@@ -923,6 +951,8 @@ wss.on("connection", async (twilioWs, req) => {
   let resolvedSession = { id: sessionId, owner_id: ownerId || null, caller_id: callerId || null };
   let userTranscript = "";
   const conversationTurns = [];
+  let elderContext = "";
+  let elderContextCallerId = "";
   let greeted = false;
   let conversationLanguage = "auto";
   let twilioReady = false;
@@ -938,6 +968,48 @@ wss.on("connection", async (twilioWs, req) => {
   let pendingCallerMatch = null;
   let turnProcessing = false;
   let callStopping = false;
+
+  async function loadElderContextForCaller(callerIdValue) {
+    if (!callerIdValue) return "";
+    if (elderContextCallerId === callerIdValue && elderContext) return elderContext;
+
+    const client = getSupabase();
+    if (!client) return "";
+
+    const { data: caller, error: callerError } = await client
+      .from("callers")
+      .select("id, full_name, current_activity, interests, symptoms, preferred_language, metadata")
+      .eq("id", callerIdValue)
+      .maybeSingle();
+
+    if (callerError) throw callerError;
+
+    const { data: memoryChunks, error: memoryError } = await client
+      .from("memory_chunks")
+      .select("chunk_type, content, facts, tags, symptoms, created_at, importance")
+      .eq("caller_id", callerIdValue)
+      .order("created_at", { ascending: true });
+
+    if (memoryError) throw memoryError;
+
+    const normalizedCaller = caller
+      ? {
+          ...caller,
+          interests: Array.isArray(caller.interests) ? caller.interests : [],
+          symptoms: Array.isArray(caller.symptoms) ? caller.symptoms : [],
+        }
+      : null;
+
+    elderContextCallerId = callerIdValue;
+    elderContext = buildElderContextBlock(normalizedCaller, memoryChunks || []);
+    logEvent({
+      type: "elder.context.loaded",
+      session_id: resolvedSession.id,
+      elder_id: callerIdValue,
+      memory_chunks: Array.isArray(memoryChunks) ? memoryChunks.length : 0,
+    });
+    return elderContext;
+  }
 
   logEvent({ type: "ws.connection", session_id: sessionId, path: url.pathname });
 
@@ -1244,6 +1316,7 @@ wss.on("connection", async (twilioWs, req) => {
 
       if (isAffirmativeReply(cleanTranscript)) {
         await linkCallerProfile(candidate);
+        await loadElderContextForCaller(candidate.id).catch((error) => logEvent({ type: "elder.context.error", elder_id: candidate.id, error: error.message }));
         await deliverAssistantReply(`Okay. I’ll use ${candidate.full_name || proposedName} from here.`, "elder_match");
         return;
       }
@@ -1251,6 +1324,7 @@ wss.on("connection", async (twilioWs, req) => {
       if (isNegativeReply(cleanTranscript)) {
         if (candidate.phone_e164 && phoneE164 && candidate.phone_e164 === phoneE164) {
           await linkCallerProfile(candidate);
+          await loadElderContextForCaller(candidate.id).catch((error) => logEvent({ type: "elder.context.error", elder_id: candidate.id, error: error.message }));
           await deliverAssistantReply(`Okay. I’ll keep the existing profile for ${candidate.full_name || proposedName}.`, "elder_match_same_phone");
           return;
         }
@@ -1258,6 +1332,8 @@ wss.on("connection", async (twilioWs, req) => {
         const newCaller = await createCallerProfile(proposedName);
         if (newCaller?.id) {
           await linkCallerProfile(newCaller);
+          elderContextCallerId = "";
+          elderContext = "";
           await deliverAssistantReply(`Okay. I made a new profile for ${proposedName}.`, "elder_new");
           return;
         }
@@ -1282,13 +1358,20 @@ wss.on("connection", async (twilioWs, req) => {
         const newCaller = await createCallerProfile(callerName);
         if (newCaller?.id) {
           await linkCallerProfile(newCaller);
+          elderContextCallerId = "";
+          elderContext = "";
           await deliverAssistantReply(`Thanks, ${callerName}.`, "elder_new_prompt");
           return;
         }
       }
     }
 
-    const reply = await generateFallbackReply(conversationTurns, conversationLanguage, systemPrompt);
+    if (resolvedSession.caller_id && !elderContext) {
+      await loadElderContextForCaller(resolvedSession.caller_id).catch((error) => logEvent({ type: "elder.context.error", elder_id: resolvedSession.caller_id, error: error.message }));
+    }
+
+    const combinedSystemPrompt = [systemPrompt || "", elderContext || ""].filter(Boolean).join("\n\n");
+    const reply = await generateFallbackReply(conversationTurns, conversationLanguage, combinedSystemPrompt);
     await deliverAssistantReply(reply, "openrouter");
   }
 
@@ -1361,6 +1444,10 @@ wss.on("connection", async (twilioWs, req) => {
           if (autoCallerId && !resolvedSession.caller_id) {
             resolvedSession.caller_id = autoCallerId;
             await client.from("call_sessions").update({ caller_id: autoCallerId }).eq("id", resolvedSession.id);
+          }
+
+          if (resolvedSession.caller_id) {
+            await loadElderContextForCaller(resolvedSession.caller_id).catch((error) => logEvent({ type: "elder.context.error", elder_id: resolvedSession.caller_id, error: error.message }));
           }
 
           await connectSarvamStt();
