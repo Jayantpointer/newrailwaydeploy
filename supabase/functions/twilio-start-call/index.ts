@@ -112,7 +112,7 @@ Deno.serve(async (req) => {
     }
 
     let sessionId = body.session_id ?? null;
-    const callerId = body.caller_id ?? (body.to ? await resolveCallerRecord(body.owner_id ?? null, body.to, body.full_name ?? "") : null);
+  const callerId = body.caller_id ?? null;
 
     if (!sessionId) {
       const { data: session, error: sessionError } = await admin
@@ -140,7 +140,6 @@ Deno.serve(async (req) => {
     if (body.owner_id) webhookUrl.searchParams.set("owner_id", body.owner_id);
     webhookUrl.searchParams.set("phone_e164", body.to);
     if (callerId) webhookUrl.searchParams.set("caller_id", callerId);
-    if (body.full_name) webhookUrl.searchParams.set("full_name", body.full_name);
 
     const statusCallbackUrl = new URL(twilioStatusCallbackUrl);
     statusCallbackUrl.searchParams.set("session_id", sessionId);

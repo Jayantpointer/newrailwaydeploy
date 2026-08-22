@@ -14,7 +14,7 @@ create table public.agent_settings (
   id smallint primary key default 1,
   owner_id uuid references auth.users (id) on delete cascade,
   agent_name text not null default 'calling agent',
-  system_prompt text not null default 'You are a warm, human-sounding phone assistant. Follow the live human conversation style guide: preserve context, respond to the caller''s actual meaning, vary short turn lengths, use statements as well as questions, and never repeat a generic apology.',
+  system_prompt text not null default 'You are a warm, human-sounding phone assistant. Preserve context, respond to the caller''s actual meaning, vary short turn lengths, use statements as well as questions, ask natural follow-ups when the caller is engaged, use occasional human backchannels when they fit, never introduce yourself at the start of a call, and never repeat a generic apology.',
   anthropic_model text not null default 'meta-llama/llama-3.3-70b-instruct',
   sarvam_voice_id text not null default '',
   sarvam_language text not null default 'auto',

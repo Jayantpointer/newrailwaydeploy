@@ -65,10 +65,15 @@ Bridge env vars:
 - `SARVAM_VOICE_ID`
 - `SARVAM_TTS_URL=https://api.sarvam.ai/text-to-speech`
 - `SARVAM_LANGUAGE=auto` to follow the caller's detected language
+- `SARVAM_TTS_PACE=0.82`
+- `SARVAM_SILENCE_DURATION_MS=650`
+- `SARVAM_MIN_SPEECH_DURATION_MS=220`
+- `FINAL_TRANSCRIPT_FLUSH_DELAY_MS=1900`
+- `ASSISTANT_REPLY_THINK_MS=300`
 - `TWILIO_STATUS_CALLBACK_URL`
 - `CALL_MEMORY_SYNC_URL`
 
-When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs the reply model to answer in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. Memory extraction uses Anthropic Claude Sonnet directly so names, symptoms, activities, and interests are captured more reliably. Live replies use `claude-haiku-4-5-20251001` for lower latency.
+When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs the reply model to answer in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. `SARVAM_TTS_PACE` controls how fast the assistant speaks. Memory extraction uses Anthropic Claude Sonnet directly so names, symptoms, activities, and interests are captured more reliably. Live replies use `claude-haiku-4-5-20251001` for lower latency.
 The live voice prompt also enforces a short engagement policy: open warmly, ask sparingly, use one relevant memory at a time, respect pauses and busy signals, and close cleanly when the caller wants to stop.
 
 Run locally with `npm install` then `npm start`.

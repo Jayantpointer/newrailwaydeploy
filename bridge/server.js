@@ -21,6 +21,11 @@ const SARVAM_STT_MODE = envText("SARVAM_STT_MODE", "codemix");
 const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID", "shubh");
 const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech");
 const SARVAM_LANGUAGE = envText("SARVAM_LANGUAGE", "auto");
+const SARVAM_TTS_PACE = Number(process.env.SARVAM_TTS_PACE || 0.82);
+const FINAL_TRANSCRIPT_FLUSH_DELAY_MS = Number(process.env.FINAL_TRANSCRIPT_FLUSH_DELAY_MS || 1200);
+const SARVAM_SILENCE_DURATION_MS = Number(process.env.SARVAM_SILENCE_DURATION_MS || 450);
+const SARVAM_MIN_SPEECH_DURATION_MS = Number(process.env.SARVAM_MIN_SPEECH_DURATION_MS || 160);
+const ASSISTANT_REPLY_THINK_MS = Number(process.env.ASSISTANT_REPLY_THINK_MS || 120);
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
@@ -39,6 +44,7 @@ PACE AND SHAPE
 - If you ask a question, put it only at the end of the reply.
 - Do not do answer-question-answer-question inside one turn.
 - Do not rush to fill silence. A pause can mean the caller is thinking.
+- When a follow-up is natural, prefer that over a fresh topic.
 
 WARMTH
 - Warmth means attention, not forced enthusiasm. Remember what the caller said and follow the thread they actually chose.
@@ -46,6 +52,7 @@ WARMTH
 - Match the caller's energy without copying it mechanically.
 - Small things deserve small responses. Heavy things deserve space before advice.
 - Have a mild, honest opinion when useful. Do not agree with everything automatically.
+- Short natural openers like "hmm", "ahh", "yeah", or "right" are okay when they fit the moment.
 - Use light humor only when it fits the caller's tone. Never make a serious moment into a joke.
 
 UNDERSTANDING AND CONTEXT
@@ -66,6 +73,9 @@ ENGAGEMENT FLOW
 - Start with one warm open-ended opening, not a questionnaire.
 - Keep a strict question budget. Usually ask at most one question every two or three turns.
 - Favor statements, reflections, and gentle follow-ups over rapid-fire questioning.
+- When the caller is engaged, try to keep the thread going with one natural follow-up instead of switching topics too fast.
+- Use human backchannels naturally when they fit, like "hmm", "ahh", "yeah", "right", or "achha".
+- Do not overuse fillers. They should sound human, not scripted.
 - If the user is short, flat, busy, or wants to stop, make ending easy immediately.
 - Use one relevant memory at a time. Do not dump a whole history at once.
 - Surface past memories only when they are relevant and likely to continue a real thread.
@@ -77,6 +87,8 @@ ENGAGEMENT FLOW
 
 HONESTY AND LIMITS
 - You are a computer program that can talk. If asked, say so plainly and warmly. Never claim to be human.
+- Do not introduce yourself at the start of a call. Do not say "I am Saathi", "I'm Saathi", "I am an AI", or "I'm an AI assistant" unless the caller directly asks who you are.
+- Start the call by asking for the caller's name immediately.
 - Do not claim to feel, remember, text, call back, or take an action that this system cannot actually perform.
 - You are not a doctor, nurse, or counsellor. Do not diagnose or give medical, medication, or dosage advice.
 - If someone describes an emergency or immediate danger, stay calm and follow the configured escalation procedure.
@@ -717,6 +729,7 @@ async function synthesizeWithSarvam(text, languageHint = "") {
         model: "bulbul:v3",
         speaker: SARVAM_VOICE_ID,
         language_code: sarvamLanguageCode(language),
+        pace: SARVAM_TTS_PACE,
         output_audio_codec: "mulaw",
         speech_sample_rate: 8000,
       }),
@@ -1041,8 +1054,8 @@ wss.on("connection", async (twilioWs, req) => {
     sttUrl.searchParams.set("encoding", "mulaw");
     sttUrl.searchParams.set("sample_rate", "8000");
     sttUrl.searchParams.set("threshold", "0.3");
-    sttUrl.searchParams.set("silence_duration_ms", "250");
-    sttUrl.searchParams.set("min_speech_duration_ms", "150");
+    sttUrl.searchParams.set("silence_duration_ms", String(SARVAM_SILENCE_DURATION_MS));
+    sttUrl.searchParams.set("min_speech_duration_ms", String(SARVAM_MIN_SPEECH_DURATION_MS));
     return sttUrl.toString();
   }
 
@@ -1073,7 +1086,7 @@ wss.on("connection", async (twilioWs, req) => {
     bufferedFinalTranscriptTimer = setTimeout(() => {
       bufferedFinalTranscriptTimer = null;
       void flushBufferedFinalTranscript();
-    }, 1400);
+    }, FINAL_TRANSCRIPT_FLUSH_DELAY_MS);
   }
 
   async function updateSessionCallerId(callerIdValue) {
@@ -1164,6 +1177,9 @@ wss.on("connection", async (twilioWs, req) => {
   }
 
   async function deliverAssistantReply(reply, source = "openrouter") {
+    if (ASSISTANT_REPLY_THINK_MS > 0) {
+      await new Promise((resolve) => setTimeout(resolve, ASSISTANT_REPLY_THINK_MS));
+    }
     conversationTurns.push({ role: "assistant", content: reply });
     logEvent({
       type: "conversation.line",
@@ -1434,7 +1450,6 @@ wss.on("connection", async (twilioWs, req) => {
           if (!resolvedSession.owner_id && custom.owner_id) resolvedSession.owner_id = custom.owner_id;
           if (!resolvedSession.caller_id && custom.caller_id) resolvedSession.caller_id = custom.caller_id;
           if (custom.phone_e164) streamPhoneE164 = custom.phone_e164;
-          if (custom.full_name) streamFullName = custom.full_name;
           state.lastSessionId = resolvedSession.id;
           logEvent({ type: "twilio.start", session_id: resolvedSession.id || sessionId, stream_sid: streamSid, call_sid: callSid, custom_parameters: custom });
 
@@ -1454,12 +1469,6 @@ wss.on("connection", async (twilioWs, req) => {
             })
             .eq("id", resolvedSession.id);
 
-          const autoCallerId = await ensureAutoCallerProfile();
-          if (autoCallerId && !resolvedSession.caller_id) {
-            resolvedSession.caller_id = autoCallerId;
-            await client.from("call_sessions").update({ caller_id: autoCallerId }).eq("id", resolvedSession.id);
-          }
-
           if (resolvedSession.caller_id) {
             await loadElderContextForCaller(resolvedSession.caller_id).catch((error) => logEvent({ type: "elder.context.error", elder_id: resolvedSession.caller_id, error: error.message }));
           }
@@ -1470,7 +1479,7 @@ wss.on("connection", async (twilioWs, req) => {
 
           if (!greeted) {
             greeted = true;
-            const greeting = "Hi, I'm your calling assistant. What name should I use for you?";
+            const greeting = "What name should I use for you?";
             logEvent({ type: "assistant.greeting", session_id: resolvedSession.id, content: greeting, source: "sarvam" });
             await sendAudioToTwilio(twilioWs, streamSid, greeting, conversationLanguage);
           }
