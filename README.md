@@ -56,6 +56,7 @@ Bridge env vars:
 - `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
 - `ANTHROPIC_API_KEY`
 - `MEMORY_EXTRACTION_MODEL=claude-sonnet-4-6`
+- `RESPONSE_MODEL=claude-haiku-4-5-20251001`
 - `SARVAM_API_KEY`
 - `SARVAM_STT_URL=wss://api.sarvam.ai/speech-to-text-realtime/ws`
 - `SARVAM_STT_MODEL=saaras:v3-realtime`
@@ -67,6 +68,6 @@ Bridge env vars:
 - `TWILIO_STATUS_CALLBACK_URL`
 - `CALL_MEMORY_SYNC_URL`
 
-When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs OpenRouter to reply in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. Memory extraction uses Anthropic Claude Sonnet directly so names, symptoms, activities, and interests are captured more reliably. Use `claude-sonnet-4-6` unless you want to try a newer Sonnet ID from your account list.
+When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs the reply model to answer in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. Memory extraction uses Anthropic Claude Sonnet directly so names, symptoms, activities, and interests are captured more reliably. Live replies use `claude-haiku-4-5-20251001` for lower latency.
 
 Run locally with `npm install` then `npm start`.

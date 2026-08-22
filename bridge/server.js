@@ -12,6 +12,7 @@ const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-i
 const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
 const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
 const MEMORY_EXTRACTION_MODEL = envText("MEMORY_EXTRACTION_MODEL", "claude-sonnet-4-6");
+const RESPONSE_MODEL = envText("RESPONSE_MODEL", "claude-haiku-4-5-20251001");
 const SARVAM_API_KEY = envText("SARVAM_API_KEY");
 const SARVAM_STT_URL = envText("SARVAM_STT_URL", "wss://api.sarvam.ai/speech-to-text-realtime/ws");
 const SARVAM_STT_MODEL = envText("SARVAM_STT_MODEL", "saaras:v3-realtime");
@@ -226,6 +227,7 @@ logEvent({
   openrouter_model: OPENROUTER_MODEL,
   anthropic_api_key_configured: Boolean(ANTHROPIC_API_KEY),
   memory_extraction_model: MEMORY_EXTRACTION_MODEL,
+  response_model: RESPONSE_MODEL,
   sarvam_stt_api_key_configured: Boolean(SARVAM_API_KEY),
   sarvam_stt_url: SARVAM_STT_URL,
   sarvam_stt_model: SARVAM_STT_MODEL,
@@ -542,7 +544,53 @@ async function extractImportantMemory(transcript) {
   }
 }
 
+async function generateReplyWithAnthropic(turns, language, systemPrompt = "") {
+  if (!ANTHROPIC_API_KEY || !turns.length) return null;
+
+  try {
+    state.anthropicRequests += 1;
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: RESPONSE_MODEL,
+        max_tokens: 250,
+        temperature: 0.4,
+        system: `${systemPrompt ? `${systemPrompt}\n\n` : ""}${HUMAN_CALLING_SYSTEM_PROMPT}\n\nReply in ${languageInstruction(language)}. Keep the next reply appropriate for this exact conversation. Do not switch languages unless the caller switches languages first.`,
+        messages: turns.map((turn) => ({
+          role: turn.role === "assistant" ? "assistant" : "user",
+          content: turn.content,
+        })),
+      }),
+    });
+
+    if (!response.ok) {
+      const details = await response.text().catch(() => "");
+      state.anthropicErrors += 1;
+      logEvent({ type: "anthropic.error", status: response.status, statusText: response.statusText, details, stage: "reply" });
+      return null;
+    }
+
+    const payload = await response.json();
+    const content = Array.isArray(payload?.content)
+      ? payload.content.map((part) => (typeof part?.text === "string" ? part.text : "")).join("\n").trim()
+      : String(payload?.content || "").trim();
+    return normalizeAssistantReply(content);
+  } catch (error) {
+    state.anthropicErrors += 1;
+    logEvent({ type: "anthropic.error", error: error.message, stage: "reply" });
+    return null;
+  }
+}
+
 async function generateFallbackReply(turns, language, systemPrompt = "") {
+  const anthropicReply = await generateReplyWithAnthropic(turns, language, systemPrompt);
+  if (anthropicReply) return anthropicReply;
+
   const text = turns.map((turn) => `${turn.role}: ${turn.content}`).join("\n").trim();
   if (!OPENROUTER_API_KEY || !text) return "Sorry, I didn’t catch that. What name should I use for you?";
 
@@ -905,8 +953,8 @@ wss.on("connection", async (twilioWs, req) => {
     sttUrl.searchParams.set("encoding", "mulaw");
     sttUrl.searchParams.set("sample_rate", "8000");
     sttUrl.searchParams.set("threshold", "0.3");
-    sttUrl.searchParams.set("silence_duration_ms", "500");
-    sttUrl.searchParams.set("min_speech_duration_ms", "250");
+    sttUrl.searchParams.set("silence_duration_ms", "250");
+    sttUrl.searchParams.set("min_speech_duration_ms", "150");
     return sttUrl.toString();
   }
 
@@ -937,7 +985,7 @@ wss.on("connection", async (twilioWs, req) => {
     bufferedFinalTranscriptTimer = setTimeout(() => {
       bufferedFinalTranscriptTimer = null;
       void flushBufferedFinalTranscript();
-    }, 900);
+    }, 1400);
   }
 
   async function updateSessionCallerId(callerIdValue) {
@@ -969,14 +1017,16 @@ wss.on("connection", async (twilioWs, req) => {
   async function createCallerProfile(fullName) {
     const client = getSupabase();
     const normalizedName = normalizeCallerName(fullName);
-    if (!client || !normalizedName || !phoneE164) return null;
+    if (!client || !phoneE164) return null;
 
     const { data, error } = await client
       .from("callers")
       .insert({
         owner_id: ownerId || null,
         phone_e164: phoneE164,
-        full_name: normalizedName,
+        full_name: normalizedName || null,
+        preferred_language: SARVAM_STT_LANGUAGE === "auto" ? "en" : SARVAM_STT_LANGUAGE,
+        metadata: { source: "auto_call_start", session_id: resolvedSession.id || null },
       })
       .select("id, full_name, phone_e164")
       .single();
@@ -995,6 +1045,16 @@ wss.on("connection", async (twilioWs, req) => {
     if (caller.full_name) {
       await client.from("callers").update({ full_name: normalizeCallerName(caller.full_name) }).eq("id", caller.id);
     }
+  }
+
+  async function ensureAutoCallerProfile() {
+    if (resolvedSession.caller_id || !phoneE164) return resolvedSession.caller_id || null;
+    const caller = await createCallerProfile(fullName || "");
+    if (caller?.id) {
+      await linkCallerProfile(caller);
+      return caller.id;
+    }
+    return null;
   }
 
   async function deliverAssistantReply(reply, source = "openrouter") {
@@ -1032,6 +1092,11 @@ wss.on("connection", async (twilioWs, req) => {
     const event = message?.event || message?.type;
     if (event === "transcript.partial") {
       state.sarvamSttPartials += 1;
+      return;
+    }
+
+    if (/speech[_\.-]?end|vad\.speech_end|speech_stop|speech\.stop/i.test(event)) {
+      void flushBufferedFinalTranscript();
       return;
     }
 
@@ -1269,6 +1334,12 @@ wss.on("connection", async (twilioWs, req) => {
               metadata: { call_sid: callSid, stream_sid: streamSid, source: "twilio_media_stream" },
             })
             .eq("id", resolvedSession.id);
+
+          const autoCallerId = await ensureAutoCallerProfile();
+          if (autoCallerId && !resolvedSession.caller_id) {
+            resolvedSession.caller_id = autoCallerId;
+            await client.from("call_sessions").update({ caller_id: autoCallerId }).eq("id", resolvedSession.id);
+          }
 
           await connectSarvamStt();
           const settings = await loadAgentSettings();
