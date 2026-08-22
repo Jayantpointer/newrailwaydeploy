@@ -6,14 +6,14 @@ const { createClient } = require("@supabase/supabase-js");
 const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
-const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
-const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
-const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
-const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
-const MEMORY_EXTRACTION_MODEL = envText("MEMORY_EXTRACTION_MODEL", "claude-sonnet-4-6");
-const RESPONSE_MODEL = envText("RESPONSE_MODEL", "claude-haiku-4-5-20251001");
-const SARVAM_API_KEY = envText("SARVAM_API_KEY");
+  const CALL_MEMORY_SYNC_URL = process.env.CALL_MEMORY_SYNC_URL || "";
+  const OPENROUTER_API_KEY = envText("OPENROUTER_API_KEY");
+  const OPENROUTER_MODEL = envText("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct");
+  const OPENROUTER_BASE_URL = envText("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1");
+  const ANTHROPIC_API_KEY = envText("ANTHROPIC_API_KEY");
+  const MEMORY_EXTRACTION_MODEL = envText("MEMORY_EXTRACTION_MODEL", "claude-sonnet-4-6");
+  const RESPONSE_MODEL = envText("RESPONSE_MODEL", "claude-haiku-4-5-20251001");
+  const SARVAM_API_KEY = envText("SARVAM_API_KEY");
 const SARVAM_STT_URL = envText("SARVAM_STT_URL", "wss://api.sarvam.ai/speech-to-text-realtime/ws");
 const SARVAM_STT_MODEL = envText("SARVAM_STT_MODEL", "saaras:v3-realtime");
 const SARVAM_STT_LANGUAGE = envText("SARVAM_STT_LANGUAGE", "auto");
@@ -914,6 +914,8 @@ wss.on("connection", async (twilioWs, req) => {
   const callerId = url.searchParams.get("caller_id") || "";
   const phoneE164 = url.searchParams.get("phone_e164") || "";
   const fullName = url.searchParams.get("full_name") || "";
+  let streamPhoneE164 = phoneE164;
+  let streamFullName = fullName;
 
   let systemPrompt = "";
   let streamSid = "";
@@ -1017,13 +1019,13 @@ wss.on("connection", async (twilioWs, req) => {
   async function createCallerProfile(fullName) {
     const client = getSupabase();
     const normalizedName = normalizeCallerName(fullName);
-    if (!client || !phoneE164) return null;
+    if (!client || !streamPhoneE164) return null;
 
     const { data, error } = await client
       .from("callers")
       .insert({
         owner_id: ownerId || null,
-        phone_e164: phoneE164,
+        phone_e164: streamPhoneE164,
         full_name: normalizedName || null,
         preferred_language: SARVAM_STT_LANGUAGE === "auto" ? "en" : SARVAM_STT_LANGUAGE,
         metadata: { source: "auto_call_start", session_id: resolvedSession.id || null },
@@ -1316,6 +1318,8 @@ wss.on("connection", async (twilioWs, req) => {
           if (!resolvedSession.id && custom.session_id) resolvedSession.id = custom.session_id;
           if (!resolvedSession.owner_id && custom.owner_id) resolvedSession.owner_id = custom.owner_id;
           if (!resolvedSession.caller_id && custom.caller_id) resolvedSession.caller_id = custom.caller_id;
+          if (custom.phone_e164) streamPhoneE164 = custom.phone_e164;
+          if (custom.full_name) streamFullName = custom.full_name;
           state.lastSessionId = resolvedSession.id;
           logEvent({ type: "twilio.start", session_id: resolvedSession.id || sessionId, stream_sid: streamSid, call_sid: callSid, custom_parameters: custom });
 
@@ -1386,8 +1390,8 @@ wss.on("connection", async (twilioWs, req) => {
             ownerId: resolvedSession.owner_id,
             callerId: resolvedSession.caller_id,
             transcript: userTranscript || fullTranscript,
-            fullName: extracted?.full_name || fullName,
-            phoneE164,
+            fullName: extracted?.full_name || streamFullName,
+            phoneE164: streamPhoneE164,
             role: "assistant",
             summary: extracted?.summary || (userTranscript || fullTranscript).slice(0, 500),
             memoryChunk: extracted?.memoryChunk || null,
