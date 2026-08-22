@@ -55,7 +55,7 @@ Bridge env vars:
 - `OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct`
 - `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
 - `ANTHROPIC_API_KEY`
-- `MEMORY_EXTRACTION_MODEL=claude-3-5-sonnet-20240620`
+- `MEMORY_EXTRACTION_MODEL=claude-sonnet-4-6`
 - `SARVAM_API_KEY`
 - `SARVAM_STT_URL=wss://api.sarvam.ai/speech-to-text-realtime/ws`
 - `SARVAM_STT_MODEL=saaras:v3-realtime`
@@ -67,6 +67,6 @@ Bridge env vars:
 - `TWILIO_STATUS_CALLBACK_URL`
 - `CALL_MEMORY_SYNC_URL`
 
-When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs OpenRouter to reply in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. Memory extraction uses Anthropic Claude Sonnet directly so names, symptoms, activities, and interests are captured more reliably. Sarvam TTS supports English, Hindi, Bengali, Gujarati, Kannada, Malayalam, Marathi, Odia, Punjabi, Tamil, Telugu, and Hinglish through Hindi voice output.
+When `SARVAM_STT_LANGUAGE=auto`, Saaras realtime detects the caller's language and the bridge instructs OpenRouter to reply in that language. `SARVAM_LANGUAGE=auto` makes Bulbul TTS follow that detected language. Memory extraction uses Anthropic Claude Sonnet directly so names, symptoms, activities, and interests are captured more reliably. Use `claude-sonnet-4-6` unless you want to try a newer Sonnet ID from your account list.
 
 Run locally with `npm install` then `npm start`.
