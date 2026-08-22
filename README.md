@@ -1,3 +1,12 @@
+## Companion Interfaces
+
+Dost is designed as an ecosystem, not just a call engine.
+
+| Interface | Purpose | Repository |
+| --- | --- | --- |
+| Family mobile app | A family-facing memory capsule dashboard for shared context and follow-up. | [Dost mobile family app](https://github.com/blankirigaya/elder-app/tree/main/elder-mobile/family-app) |
+| Web demo | Product and family-facing web experience for Dost. | [Dost web demo](https://github.com/Abhishek9639/Call-Me) |
+
 # Dost
 
 **A phone-first AI companion that remembers everyday routines, keeps conversations personal, and makes meaningful changes visible over time.**
@@ -306,14 +315,7 @@ This boundary is deliberate. The MVP demonstrates the mismatch-warning interacti
 - Twilio status callbacks for call lifecycle updates
 - Railway bridge for real-time media, STT, reply generation, and TTS delivery
 
-## Companion Interfaces
 
-Dost is designed as an ecosystem, not just a call engine.
-
-| Interface | Purpose | Repository |
-| --- | --- | --- |
-| Family mobile app | A family-facing memory capsule dashboard for shared context and follow-up. | [Dost mobile family app](https://github.com/blankirigaya/elder-app/tree/main/elder-mobile/family-app) |
-| Web demo | Product and family-facing web experience for Dost. | [Dost web demo](https://github.com/Abhishek9639/Call-Me) |
 
 ## Architecture
 
