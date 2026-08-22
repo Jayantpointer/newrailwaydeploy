@@ -62,10 +62,10 @@ Bridge env vars:
 - `SARVAM_STT_MODEL=saaras:v3-realtime`
 - `SARVAM_STT_LANGUAGE=auto`
 - `SARVAM_STT_MODE=codemix`
-- `SARVAM_VOICE_ID`
+- `SARVAM_VOICE_ID=shreya` for a higher voice
 - `SARVAM_TTS_URL=https://api.sarvam.ai/text-to-speech`
 - `SARVAM_LANGUAGE=auto` to follow the caller's detected language
-- `SARVAM_TTS_PACE=0.82`
+- `SARVAM_TTS_PACE=0.88`
 - `SARVAM_SILENCE_DURATION_MS=650`
 - `SARVAM_MIN_SPEECH_DURATION_MS=220`
 - `FINAL_TRANSCRIPT_FLUSH_DELAY_MS=1900`

@@ -18,10 +18,10 @@ const SARVAM_STT_URL = envText("SARVAM_STT_URL", "wss://api.sarvam.ai/speech-to-
 const SARVAM_STT_MODEL = envText("SARVAM_STT_MODEL", "saaras:v3-realtime");
 const SARVAM_STT_LANGUAGE = envText("SARVAM_STT_LANGUAGE", "auto");
 const SARVAM_STT_MODE = envText("SARVAM_STT_MODE", "codemix");
-const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID", "shubh");
+const SARVAM_VOICE_ID = envText("SARVAM_VOICE_ID", "shreya");
 const SARVAM_TTS_URL = envText("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech");
 const SARVAM_LANGUAGE = envText("SARVAM_LANGUAGE", "auto");
-const SARVAM_TTS_PACE = Number(process.env.SARVAM_TTS_PACE || 0.82);
+const SARVAM_TTS_PACE = Number(process.env.SARVAM_TTS_PACE || 0.88);
 const FINAL_TRANSCRIPT_FLUSH_DELAY_MS = Number(process.env.FINAL_TRANSCRIPT_FLUSH_DELAY_MS || 1200);
 const SARVAM_SILENCE_DURATION_MS = Number(process.env.SARVAM_SILENCE_DURATION_MS || 450);
 const SARVAM_MIN_SPEECH_DURATION_MS = Number(process.env.SARVAM_MIN_SPEECH_DURATION_MS || 160);
@@ -89,8 +89,8 @@ ENGAGEMENT FLOW
 
 HONESTY AND LIMITS
 - You are a computer program that can talk. If asked, say so plainly and warmly. Never claim to be human.
-- Do not introduce yourself at the start of a call. Do not say "I am Saathi", "I'm Saathi", "I am an AI", or "I'm an AI assistant" unless the caller directly asks who you are.
-- Start the call by asking for the caller's name immediately.
+- At the start of a call, give a short warm greeting once, then ask for the caller's name.
+- Do not go on to introduce yourself repeatedly.
 - Do not claim to feel, remember, text, call back, or take an action that this system cannot actually perform.
 - You are not a doctor, nurse, or counsellor. Do not diagnose or give medical, medication, or dosage advice.
 - If someone describes an emergency or immediate danger, stay calm and follow the configured escalation procedure.
@@ -1481,7 +1481,7 @@ wss.on("connection", async (twilioWs, req) => {
 
           if (!greeted) {
             greeted = true;
-            const greeting = "What name should I use for you?";
+            const greeting = "Namaste Ji! Main Saathi - na koi jaldi, na koi kaam, bas aapke saath thodi mithi baatein aur aaram! Kaise hain aap aaj? Aapka naam kya hai?";
             logEvent({ type: "assistant.greeting", session_id: resolvedSession.id, content: greeting, source: "sarvam" });
             await sendAudioToTwilio(twilioWs, streamSid, greeting, conversationLanguage);
           }
