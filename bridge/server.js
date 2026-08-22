@@ -995,10 +995,14 @@ wss.on("connection", async (twilioWs, req) => {
     const client = getSupabase();
     if (!client || !resolvedSession.id || !callerIdValue) return;
 
-    await client
+    const { error } = await client
       .from("call_sessions")
       .update({ caller_id: callerIdValue })
       .eq("id", resolvedSession.id);
+    if (error) {
+      logEvent({ type: "elder.assignment.error", session_id: resolvedSession.id, elder_id: callerIdValue, error: error.message });
+      throw error;
+    }
   }
 
   async function findCallerByName(name) {
@@ -1054,8 +1058,22 @@ wss.on("connection", async (twilioWs, req) => {
     const caller = await createCallerProfile(streamFullName || "");
     if (caller?.id) {
       await linkCallerProfile(caller);
+      logEvent({
+        type: "elder.assigned",
+        session_id: resolvedSession.id,
+        elder_id: caller.id,
+        elder_name: caller.full_name || null,
+        phone_e164: caller.phone_e164 || streamPhoneE164 || null,
+        source: "call_start",
+      });
       return caller.id;
     }
+    logEvent({
+      type: "elder.assignment.failed",
+      session_id: resolvedSession.id,
+      phone_e164: streamPhoneE164 || null,
+      reason: "caller insert returned no id",
+    });
     return null;
   }
 
