@@ -142,7 +142,7 @@ After a call, the transcript and memory extraction flow identify facts that were
 - `memory_chunks.created_at`: chronology for understanding what came first
 - `memory_chunks.importance`: a coarse signal for memory relevance
 
-Claude Sonnet performs structured extraction after the call. The system prompt explicitly instructs it not to invent symptoms, interests, routines, or names. This prevents a model inference from silently becoming a user fact.
+Llama 3.3 70B Instruct (Custom Deployed) performs structured extraction after the call. The system prompt explicitly instructs it not to invent symptoms, interests, routines, or names. This prevents a model inference from silently becoming a user fact.
 
 #### 3. Load longitudinal context before the next conversation
 
@@ -290,7 +290,7 @@ This boundary is deliberate. The MVP demonstrates the mismatch-warning interacti
 - Twilio outbound calling and media streams
 - Sarvam Saaras v3 realtime speech-to-text for Indian-language and code-mixed speech
 - Sarvam Bulbul v3 text-to-speech, with configurable voice, pace, and post-synthesis gain
-- Claude Haiku live replies for low-latency conversation and Claude Sonnet memory extraction
+- Llama 3.3 70B Instruct (Custom Deployed) live replies for low-latency conversation and memory extraction
 - Hindi, English, Hinglish, and language-aware responses
 
 ### Conversational intelligence
@@ -328,9 +328,9 @@ Twilio Voice + Media Stream
     v
 Railway voice bridge
     |-- Sarvam Saaras v3: realtime transcription
-    |-- Claude Haiku: live conversational response
+    |-- Llama 3.3 70B Instruct (Custom Deployed): live conversational response
     |-- Sarvam Bulbul v3: synthesized voice response
-    |-- Claude Sonnet: post-call memory extraction
+    |-- Llama 3.3 70B Instruct (Custom Deployed): post-call memory extraction
     |
     v
 Supabase
@@ -371,20 +371,10 @@ npm start
 
 The bridge runs with `node bridge/server.js`.
 
-## Required Configuration
-
-### Core services
-
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `ANTHROPIC_API_KEY`
-- `SARVAM_API_KEY`
-- `CALL_MEMORY_SYNC_URL`
-
 ### Voice and language tuning
 
-- `RESPONSE_MODEL=claude-haiku-4-5-20251001`
-- `MEMORY_EXTRACTION_MODEL=claude-sonnet-4-6`
+- `RESPONSE_MODEL=llama-3.3-70b-instruct`
+- `MEMORY_EXTRACTION_MODEL=llama-3.3-70b-instruct`
 - `SARVAM_STT_MODEL=saaras:v3-realtime`
 - `SARVAM_STT_LANGUAGE=auto`
 - `SARVAM_STT_MODE=codemix`
