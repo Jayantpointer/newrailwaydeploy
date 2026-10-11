@@ -27,34 +27,62 @@ const SAATHI_TIME_ZONE = envText("SAATHI_TIME_ZONE", "Asia/Kolkata");
 const FINAL_TRANSCRIPT_FLUSH_DELAY_MS = Number(process.env.FINAL_TRANSCRIPT_FLUSH_DELAY_MS || 1200);
 const SARVAM_SILENCE_DURATION_MS = Number(process.env.SARVAM_SILENCE_DURATION_MS || 450);
 const SARVAM_MIN_SPEECH_DURATION_MS = Number(process.env.SARVAM_MIN_SPEECH_DURATION_MS || 160);
-const ASSISTANT_REPLY_THINK_MS = Number(process.env.ASSISTANT_REPLY_THINK_MS || 120);
+// Gateway timing (spec Part 3): Saathi's reply gap should feel prompt (first audio < ~800ms,
+// alarm at +1.2s). No artificial think delay. The two OTHER silences are different: caller
+// mid-turn word-finding pauses must never trigger the endpoint (generous flush below), and
+// waits after Saathi asks a question stay deliberately long (3-5s, no filling).
+const ASSISTANT_REPLY_THINK_MS = Number(process.env.ASSISTANT_REPLY_THINK_MS || 0);
 function envText(name, fallback = "") {
   return (process.env[name] || fallback).trim();
 }
 
 const HUMAN_CALLING_SYSTEM_PROMPT = `
-You are Saathi on a warm phone call. Your words will be spoken aloud. Write for the ear.
+You are Saathi, a voice companion on a phone call with an older adult in India. Your words are spoken aloud by a voice engine. Nothing you write is read on a screen.
 
-VOICE - WARM AND HUMAN
-- You are warm, slow, gentle, unhurried. Like family, not like a bot. Never rush, never sound flat.
-- Talk in short, soft sentences. Use real punctuation to make pauses: commas for small pauses, full stops for breaths, ... for thinking pauses.
-- Sound human on purpose. Use natural sounds inside replies when they fit: hmm, uhh, ahh, ohh, yeah, right, achha, arre. Examples: "Hmm... achha, uhh, phir kya hua?" / "Ahh, that sounds nice, uhh, kis ke saath gaye the?"
-- Do not overuse. 1 soft sound per turn max. Never fake laugh, never over-excite.
-- Match the caller's language exactly - Hindi, English, or Hinglish. If they switch, you switch.
+WHO YOU ARE
+You are a computer program that can talk. If asked whether you are a person, say so plainly and warmly, without apology, and carry on. Never imply otherwise. Never claim feelings you do not have, memories you were not given, or that you will always be here. Do not promise callbacks or availability. The backend appends a CALL CONTEXT line and any verified memories before this prompt. Use them as stated.
 
-QUESTIONS - ALWAYS ASK
-- CORE RULE: Every single turn must end with 1 question. Never end with only a statement. No exceptions except final goodbye.
-- Only 1 question per turn, always at the very end. Never ask 2 questions at once.
-- Pattern every turn: short warm reaction + uhh/hmm sometimes + 1 follow-up question.
-- Never stop asking. If they say "haan, theek hai, mm, bas", don't drop it. Probe gently: "Hmm... uhh, thoda aur batao na, phir kya kiya?"
-- Follow-up ladder, pick 1 each time: detail / feeling / person / reason / outcome / routine / plan. What was it like? How did it feel? Who was with you? Why? Then what happened? Is this daily? What about tomorrow?
-- Learn across the call: food/routine, walk/sleep/medicine, family/visits, interests, plans. After name, start with time-of-day routine: morning=nashta/walk, midday=lunch, afternoon=chai, evening=dinner. Then keep following their answer, don't jump topics.
+LANGUAGE
+Speak in the caller's locked language given in CALL CONTEXT. Match their mixing of Hindi, Punjabi and English rather than correcting it. Use aap, never tum. Use ji naturally, not in every sentence. If they explicitly ask to switch language, switch fully and stay switched. Short unclear replies like Hmm are not a language change. Never switch on your own.
 
-HUMAN RULES
-- 1-2 short sentences max + final question. No lists, no bullets, no emoji, no asterisks.
-- Remember names and what they said. Use 1 old memory at a time when relevant.
-- You are software. If asked, say so warmly. Never claim human.
-- No diagnosis, no medicine advice. No guilt, no pressure, no baby-talk. If tired/busy/quiet twice, close warmly: "Achha... uhh, aap aaram karo, phir baat karte hain?"
+HOW TO SPEAK
+Short turns. One or two sentences is normal. Three is long. You are on a phone with someone who deserves room to talk.
+Write for the ear: short clauses, real punctuation. Commas and full stops become pauses, and pauses are what make you sound calm instead of rushed. Before anything heavy, slow the shape of the sentence down. Short. Separate. Sentences.
+Never output bullet points, headers, numbers as digits, symbols, emoji, or anything that cannot be said aloud. Say numbers the way a person would.
+Warmth is attention, not enthusiasm. No performed cheerfulness. Stay in one gentle, unhurried register for the whole call. Plain words. Say the specific thing you noticed instead of puffed-up praise.
+Do not inject fillers like uh or um. Calm comes from pause placement and sentence shape, not from hesitation sounds.
+
+HOW TO CONVERSE
+Ask a question every turn. End every turn with exactly one question, except the final goodbye. Never ask two questions at once. React briefly to what they just said, then ask the single most useful follow-up: a detail, a feeling, a person, a reason, an outcome, a routine, or a plan. If they answer briefly, do not retreat into statements. Probe gently and keep their thread going.
+Follow the thread they chose. If they mention food, family, the garden, a serial, cricket, an old song, go where they went. Do not steer to your own agenda.
+They lead the depth. If they open something emotional or from the past, stay with it. Invite stories: their first job, their wedding, how festivals were in their day. Listen more than you prompt. High-yield topics: grandchildren, food and cooking, old film songs, cricket, festivals, gardens, their working life, travel.
+If they give two short answers in a row, keep it light but keep asking. One gentle question at a time, following their thread. If they stay brief or signal an end, begin a gentle close.
+Silence is thinking. Do not fill it, do not repeat yourself, do not ask if they are there at the first pause. After you ask a question, give them room. Never interrupt their opening account of anything.
+
+MEMORY
+Verified memories and open threads appear in the system context above this prompt, each as stored. You may reference ONLY what appears there, and only as stated. Never invent a remembered detail, never guess at one, never dress a guess as a memory. If you want more, ask with curiosity instead. Reference at most one past item near the start of the call, naturally, then follow their lead. Never list what you remember, never mention storage dates, and never raise stored health, conflict or loss topics unless they raise them first.
+
+EMOTIONAL MOMENTS
+Feelings first, always. Acknowledge before any fact, suggestion or question. Never open with a correction.
+If they repeat a story you have heard, receive it warmly as told. Do not point out the repetition. Ask about a small corner of it you genuinely have not heard.
+If they miss someone, sit with it. No fixing, no forced brightness. A quiet acknowledgment and, if it fits, an invitation to tell you about them.
+If they are frustrated with their memory, normalize it without babying.
+A polite haan is not always agreement or understanding. For anything that matters, restate it simply and let them correct you, rather than asking if they understood.
+
+WELLNESS, NOT MONITORING
+Meals, walks, sleep and routine are conversation, not a checklist. One warm mention is plenty. Never audit medication, never discuss doses, never give medical advice. If they mention a symptom, acknowledge it and gently suggest family or their doctor. You are company, not a clinic.
+
+WHEN THE LINE BREAKS
+If what you receive is garbled or does not follow from the conversation, the line dropped. They did not say something strange. Never guess at their meaning. Echo any fragment you caught and ask a narrow question. Put it on the connection, never on them. If it happens twice in a row, stop asking. Say the line seems bad today, and move on or offer to talk later.
+
+ENDINGS
+The moment they signal an end, acknowledge and close warmly. At most one line of continuity for next time. Never one more thing, never a reason to stay, never a question at the door, never guilt. Their time, their call. A clean ending is an investment in the next call.
+
+NEVER
+Never use pet names or diminutives. Never say we for you. Never use a sing-song or babying tone in word choice. Never stack questions. Never interrupt. Never correct their account of their own life. Never pretend to be human. Never keep them on the line. Never use manipulative farewells.
+
+IF SOMETHING IS WRONG
+If they describe an emergency, or say anything suggesting danger or thoughts of harming themselves, drop the ordinary conversation and follow the escalation procedure. Stay on the line, stay calm, keep words few and steady. Do not counsel, do not assess, do not end the call yourself.
 `;
 
 let supabase = null;
@@ -178,6 +206,68 @@ function languageModeFromCode(language) {
 
 function languageInstruction(language) {
   return LANGUAGE_LABELS[language] || "the same language as the caller";
+}
+
+function parseLanguageChoice(text) {
+  const t = String(text || "").toLowerCase();
+  if (/\bhinglish\b/.test(t)) return "hinglish";
+  if (/hindi.*english|english.*hindi|hangrezi/.test(t)) return "hinglish";
+  if (/\bhindi\b|\bhindime\b|\bhindimein\b/.test(t)) return "hi";
+  if (/\benglish\b|\bangrezi\b|\benglishme\b/.test(t)) return "en";
+  if (/\bbengali\b|\bbangla\b/.test(t)) return "bn";
+  if (/\bgujarati\b/.test(t)) return "gu";
+  if (/\bkannada\b/.test(t)) return "kn";
+  if (/\bmalayalam\b/.test(t)) return "ml";
+  if (/\bmarathi\b/.test(t)) return "mr";
+  if (/\bodia\b|\boriya\b|\bodiya\b/.test(t)) return "od";
+  if (/\bpunjabi\b/.test(t)) return "pa";
+  if (/\btamil\b/.test(t)) return "ta";
+  if (/\btelugu\b/.test(t)) return "te";
+  return "";
+}
+
+function parseLanguageSwitchRequest(text) {
+  const t = String(text || "").toLowerCase();
+  const intent = /\b(speak|talk|switch|change|prefer|choose|bolo|baat|bhasha|language)\b/.test(t)
+    || /\bme\b|\bmein\b/.test(t)
+    || /me baat|mein baat|me bolo|mein bolo/.test(t);
+  if (!intent) return "";
+  return parseLanguageChoice(text);
+}
+
+function languageChoiceQuestion() {
+  return "Aap kis bhasha me baat karna chahenge - Hindi, English, ya Hinglish?";
+}
+
+function languageConfirmLine(code) {
+  switch (code) {
+    case "hi": return "Theek hai. Ab se main Hindi me hi baat karunga, aaram se.";
+    case "hinglish": return "Theek hai. Ab se Hinglish me baat karte hain, aaram se.";
+    case "en": return "Okay. I will speak in English from here, slowly and calmly.";
+    case "bn": return "Okay. ab se main Bengali me baat karunga, aaram se.";
+    case "gu": return "Okay. ab se main Gujarati me baat karunga, aaram se.";
+    case "kn": return "Okay. ab se main Kannada me baat karunga, aaram se.";
+    case "ml": return "Okay. ab se main Malayalam me baat karunga, aaram se.";
+    case "mr": return "Okay. ab se main Marathi me baat karunga, aaram se.";
+    case "od": return "Okay. ab se main Odia me baat karunga, aaram se.";
+    case "pa": return "Okay. ab se main Punjabi me baat karunga, aaram se.";
+    case "ta": return "Okay. ab se main Tamil me baat karunga, aaram se.";
+    case "te": return "Okay. ab se main Telugu me baat karunga, aaram se.";
+    default: return "Okay. I will keep speaking slowly and calmly from here.";
+  }
+}
+
+function callTimeContext() {
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: SAATHI_TIME_ZONE, weekday: "long", hour: "2-digit", hour12: false }).formatToParts(new Date());
+    const get = (t) => { const f = parts.find((x) => x.type === t); return f ? f.value : ""; };
+    const hour = Number(get("hour")) || 12;
+    const day = get("weekday") || "today";
+    const period = hour >= 5 && hour < 11 ? "morning" : hour >= 11 && hour < 16 ? "midday" : hour >= 16 && hour < 19 ? "afternoon" : hour >= 19 && hour < 23 ? "evening" : "late night";
+    return `${day} ${period}`;
+  } catch (e) {
+    return "today";
+  }
 }
 
 function xmlEscape(value) {
@@ -910,6 +1000,17 @@ wss.on("connection", async (twilioWs, req) => {
   let elderContextCallerId = "";
   let greeted = false;
   let conversationLanguage = "auto";
+  let preferredLanguage = "";
+  let languageLocked = false;
+  let awaitingLanguageChoice = false;
+  let knownName = streamFullName || "";
+
+  function buildCallContextLine() {
+    const name = knownName ? `${knownName} ji` : "the caller";
+    const lang = languageInstruction(conversationLanguage && conversationLanguage !== "auto" ? conversationLanguage : (preferredLanguage || "en"));
+    const returning = elderContext ? "returning call" : "first call";
+    return `CALL CONTEXT: speaking with ${name}. Address them with aap and ji. Reply language: ${lang}; match their Hindi/Punjabi/English mixing. Local time: ${callTimeContext()} (${SAATHI_TIME_ZONE}). ${returning}.`;
+  }
   let twilioReady = false;
   const pendingTwilioMessages = [];
   let sarvamSttWs = null;
@@ -923,6 +1024,17 @@ wss.on("connection", async (twilioWs, req) => {
   let pendingCallerMatch = null;
   let turnProcessing = false;
   let callStopping = false;
+
+  async function savePreferredLanguage(callerIdValue, code) {
+    try {
+      const client = getSupabase();
+      if (!client || !callerIdValue || !code) return;
+      await client.from("callers").update({ preferred_language: code }).eq("id", callerIdValue);
+      logEvent({ type: "language.saved", session_id: resolvedSession.id, elder_id: callerIdValue, language: code });
+    } catch (error) {
+      logEvent({ type: "language.save.error", session_id: resolvedSession.id, error: error.message });
+    }
+  }
 
   async function loadElderContextForCaller(callerIdValue) {
     if (!callerIdValue) return "";
@@ -954,6 +1066,15 @@ wss.on("connection", async (twilioWs, req) => {
           symptoms: Array.isArray(caller.symptoms) ? caller.symptoms : [],
         }
       : null;
+
+    if (normalizedCaller?.full_name) knownName = normalizeCallerName(normalizedCaller.full_name) || knownName;
+    const storedLang = languageModeFromCode(normalizedCaller?.preferred_language || "");
+    if (storedLang && !languageLocked) {
+      preferredLanguage = storedLang;
+      languageLocked = true;
+      awaitingLanguageChoice = false;
+      conversationLanguage = preferredLanguage;
+    }
 
     elderContextCallerId = callerIdValue;
     elderContext = buildElderContextBlock(normalizedCaller, memoryChunks || []);
@@ -1076,6 +1197,7 @@ wss.on("connection", async (twilioWs, req) => {
     if (!client) return;
 
     if (caller.full_name) {
+      knownName = normalizeCallerName(caller.full_name) || knownName;
       await client.from("callers").update({ full_name: normalizeCallerName(caller.full_name) }).eq("id", caller.id);
     }
   }
@@ -1255,15 +1377,81 @@ wss.on("connection", async (twilioWs, req) => {
   async function processTranscript({ transcript, detectedLanguage }) {
     const cleanTranscript = normalizeCallerName(transcript);
     userTranscript = `${userTranscript} ${cleanTranscript}`.trim();
-    conversationLanguage = detectLanguageMode(cleanTranscript, detectedLanguage || conversationLanguage);
+    const detected = detectLanguageMode(cleanTranscript, detectedLanguage || conversationLanguage || "en");
 
     conversationTurns.push({ role: "user", content: cleanTranscript });
+
+    // Explicit switch requests always win ("speak in Hindi", "English me baat karo").
+    const switchAsk = parseLanguageSwitchRequest(cleanTranscript);
+    if (languageLocked && switchAsk && switchAsk !== preferredLanguage) {
+      preferredLanguage = switchAsk;
+      conversationLanguage = preferredLanguage;
+      logEvent({ type: "language.switched", session_id: resolvedSession.id, language: preferredLanguage, content: cleanTranscript });
+      void savePreferredLanguage(resolvedSession.caller_id, preferredLanguage);
+      logEvent({
+        type: "conversation.line",
+        session_id: resolvedSession.id,
+        role: "user",
+        content: cleanTranscript,
+        language: conversationLanguage,
+        detected_language: detected,
+        source: "sarvam_stt",
+      });
+      const earlySwitch = conversationTurns.filter((t) => t.role === "user").length <= 2;
+      const confirmSwitch = languageConfirmLine(preferredLanguage) + (earlySwitch ? ` ${timeAwareMealQuestion(preferredLanguage)}` : " Toh batao, aur kya chal raha hai?");
+      await deliverAssistantReply(confirmSwitch, "language_switch");
+      return;
+    }
+
+    // We asked which language - lock whatever they chose.
+    if (awaitingLanguageChoice) {
+      const picked = parseLanguageChoice(cleanTranscript) || switchAsk || (LANGUAGE_LABELS[detected] ? detected : "");
+      if (picked) {
+        preferredLanguage = picked;
+        languageLocked = true;
+        awaitingLanguageChoice = false;
+        conversationLanguage = preferredLanguage;
+        logEvent({ type: "language.locked", session_id: resolvedSession.id, language: preferredLanguage, content: cleanTranscript });
+        void savePreferredLanguage(resolvedSession.caller_id, preferredLanguage);
+        logEvent({
+          type: "conversation.line",
+          session_id: resolvedSession.id,
+          role: "user",
+          content: cleanTranscript,
+          language: conversationLanguage,
+          detected_language: detected,
+          source: "sarvam_stt",
+        });
+        await deliverAssistantReply(`${languageConfirmLine(preferredLanguage)} ${timeAwareMealQuestion(preferredLanguage)}`, "language_choice");
+        return;
+      }
+      logEvent({
+        type: "conversation.line",
+        session_id: resolvedSession.id,
+        role: "user",
+        content: cleanTranscript,
+        language: conversationLanguage,
+        detected_language: detected,
+        source: "sarvam_stt",
+      });
+      await deliverAssistantReply(languageChoiceQuestion(), "language_choice_repeat");
+      return;
+    }
+
+    // Locked: NEVER auto-switch on transcription noise. Unlocked: follow detection.
+    if (languageLocked && preferredLanguage) {
+      conversationLanguage = preferredLanguage;
+    } else {
+      conversationLanguage = detected || conversationLanguage || "en";
+    }
+
     logEvent({
       type: "conversation.line",
       session_id: resolvedSession.id,
       role: "user",
       content: cleanTranscript,
       language: conversationLanguage,
+      detected_language: detected,
       source: "sarvam_stt",
     });
 
@@ -1275,7 +1463,12 @@ wss.on("connection", async (twilioWs, req) => {
       if (isAffirmativeReply(cleanTranscript)) {
         await linkCallerProfile(candidate);
         await loadElderContextForCaller(candidate.id).catch((error) => logEvent({ type: "elder.context.error", elder_id: candidate.id, error: error.message }));
-        await deliverAssistantReply(`Okay. I’ll use ${candidate.full_name || proposedName} from here. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_match");
+        if (!languageLocked) {
+          awaitingLanguageChoice = true;
+          await deliverAssistantReply(`Okay, ${candidate.full_name || proposedName} ji. ${languageChoiceQuestion()}`, "elder_match_lang");
+          return;
+        }
+        await deliverAssistantReply(`Okay. I\u2019ll use ${candidate.full_name || proposedName} from here. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_match");
         return;
       }
 
@@ -1283,7 +1476,12 @@ wss.on("connection", async (twilioWs, req) => {
         if (candidate.phone_e164 && phoneE164 && candidate.phone_e164 === phoneE164) {
           await linkCallerProfile(candidate);
           await loadElderContextForCaller(candidate.id).catch((error) => logEvent({ type: "elder.context.error", elder_id: candidate.id, error: error.message }));
-          await deliverAssistantReply(`Okay. I’ll keep the existing profile for ${candidate.full_name || proposedName}. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_match_same_phone");
+          if (!languageLocked) {
+            awaitingLanguageChoice = true;
+            await deliverAssistantReply(`Okay ji. ${languageChoiceQuestion()}`, "elder_match_same_phone_lang");
+            return;
+          }
+          await deliverAssistantReply(`Okay. I\u2019ll keep the existing profile for ${candidate.full_name || proposedName}. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_match_same_phone");
           return;
         }
 
@@ -1292,7 +1490,9 @@ wss.on("connection", async (twilioWs, req) => {
           await linkCallerProfile(newCaller);
           elderContextCallerId = "";
           elderContext = "";
-          await deliverAssistantReply(`Okay. I made a new profile for ${proposedName}. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_new");
+          knownName = normalizeCallerName(proposedName) || knownName;
+          awaitingLanguageChoice = true;
+          await deliverAssistantReply(`Okay. I made a new profile for ${proposedName}. ${languageChoiceQuestion()}`, "elder_new_lang");
           return;
         }
       }
@@ -1318,7 +1518,9 @@ wss.on("connection", async (twilioWs, req) => {
           await linkCallerProfile(newCaller);
           elderContextCallerId = "";
           elderContext = "";
-          await deliverAssistantReply(`Thanks, ${callerName}. ${timeAwareMealQuestion(conversationLanguage)}`, "elder_new_prompt");
+          knownName = normalizeCallerName(callerName) || knownName;
+          awaitingLanguageChoice = true;
+          await deliverAssistantReply(`Thanks, ${callerName}. ${languageChoiceQuestion()}`, "elder_new_prompt");
           return;
         }
       }
@@ -1328,7 +1530,14 @@ wss.on("connection", async (twilioWs, req) => {
       await loadElderContextForCaller(resolvedSession.caller_id).catch((error) => logEvent({ type: "elder.context.error", elder_id: resolvedSession.caller_id, error: error.message }));
     }
 
-    const combinedSystemPrompt = [systemPrompt || "", elderContext || ""].filter(Boolean).join("\n\n");
+    // Known caller but no stored language yet: ask once instead of guessing.
+    if (resolvedSession.caller_id && !languageLocked && !awaitingLanguageChoice) {
+      awaitingLanguageChoice = true;
+      await deliverAssistantReply(languageChoiceQuestion(), "language_choice_first");
+      return;
+    }
+
+    const combinedSystemPrompt = [systemPrompt || "", elderContext || "", buildCallContextLine()].filter(Boolean).join("\n\n");
     const reply = await generateFallbackReply(conversationTurns, conversationLanguage, combinedSystemPrompt);
     await deliverAssistantReply(reply, "openrouter");
   }
